@@ -1,0 +1,121 @@
+{
+  "template_id": "HOT-TPL-001",
+  "template_name": "Standard Retail Heads of Terms",
+  "version": "2.1",
+  "last_updated": "2026-01-15",
+  "description": "Auto-generated HoT template for standard retail leasing. Agent populates all {{placeholders}} from Yardi unit data, pricing rules, and tenant inquiry.",
+
+  "document": {
+    "title": "Heads of Terms — Subject to Contract",
+    "disclaimer": "This document is issued for discussion purposes only and does not constitute a binding legal agreement. A formal lease agreement is required to create binding obligations.",
+
+    "sections": [
+      {
+        "section": "1. Parties",
+        "fields": [
+          { "label": "Landlord", "value": "Majid Al Futtaim Properties LLC", "source": "static" },
+          { "label": "Tenant (Legal Entity)", "value": "{{legal_entity_name}}", "source": "tenant.legal_entity_name" },
+          { "label": "Brand Name", "value": "{{brand_name}}", "source": "tenant.brand_name" },
+          { "label": "Tenant Trade License No.", "value": "{{trade_license_no}}", "source": "tenant.trade_license_no" },
+          { "label": "Authorized Signatory", "value": "{{signatory_name}}, {{signatory_title}}", "source": "tenant.power_of_attorney.holder_name + holder_title" }
+        ]
+      },
+      {
+        "section": "2. Premises",
+        "fields": [
+          { "label": "Mall", "value": "{{mall_name}}", "source": "unit.mall" },
+          { "label": "Unit Reference", "value": "{{unit_id}}", "source": "unit.unit_id" },
+          { "label": "Floor", "value": "{{floor}}", "source": "unit.floor" },
+          { "label": "Zone", "value": "{{zone}}", "source": "unit.zone" },
+          { "label": "Approximate Area (sqm)", "value": "{{size_sqm}} sqm", "source": "unit.size_sqm" },
+          { "label": "Permitted Use", "value": "{{category}}", "source": "inquiry.category" }
+        ]
+      },
+      {
+        "section": "3. Lease Term",
+        "fields": [
+          { "label": "Lease Term", "value": "{{term_years}} years", "source": "pricing.min_lease_term_years" },
+          { "label": "Fit-Out Period", "value": "{{fit_out_months}} months (rent-free possession)", "source": "pricing.standard_fit_out_months" },
+          { "label": "Proposed Fit-Out Start", "value": "{{fit_out_start_date}}", "source": "calculated: agreement_date + 14 days" },
+          { "label": "Proposed Lease Commencement", "value": "{{lease_start_date}}", "source": "calculated: fit_out_start + fit_out_months" },
+          { "label": "Proposed Lease Expiry", "value": "{{lease_expiry_date}}", "source": "calculated: lease_start + term_years" }
+        ]
+      },
+      {
+        "section": "4. Financial Terms",
+        "fields": [
+          { "label": "Base Rent (per sqm/year)", "value": "AED {{base_rent_aed_sqm}}", "source": "pricing.base_rent_aed_sqm_target" },
+          { "label": "Annual Base Rent", "value": "AED {{annual_base_rent_aed}}", "source": "calculated: base_rent_aed_sqm × size_sqm" },
+          { "label": "Service Charge (per sqm/year)", "value": "AED {{service_charge_aed_sqm}}", "source": "pricing.service_charge_aed_sqm" },
+          { "label": "Marketing Levy (per sqm/year)", "value": "AED {{marketing_levy_aed_sqm}}", "source": "pricing.marketing_levy_aed_sqm" },
+          { "label": "Turnover Rent", "value": "{{turnover_rent_pct}}% of annual gross sales above threshold", "source": "pricing.turnover_rent_pct" },
+          { "label": "Total Annual Occupancy Cost (est.)", "value": "AED {{total_annual_occupancy_cost_aed}}", "source": "calculated: base + service charge + marketing levy" },
+          { "label": "Payment Schedule", "value": "Quarterly in advance", "source": "static" }
+        ]
+      },
+      {
+        "section": "5. Deposits",
+        "fields": [
+          { "label": "Security Deposit", "value": "AED {{security_deposit_aed}} ({{security_deposit_months}} months' base rent)", "source": "calculated: base_rent × security_deposit_months / 12" },
+          { "label": "Fit-Out Deposit", "value": "AED {{fit_out_deposit_aed}} ({{fit_out_deposit_months}} month's base rent)", "source": "calculated: base_rent × fit_out_deposit_months / 12" },
+          { "label": "Deposit Payment Due", "value": "Upon execution of this HoT", "source": "static" }
+        ]
+      },
+      {
+        "section": "6. Rent-Free Period",
+        "fields": [
+          { "label": "Rent-Free Months", "value": "{{rent_free_months}} months", "source": "pricing.rent_free_months_allowed or negotiated" },
+          { "label": "Applicable To", "value": "Base rent only. Service charge and marketing levy remain payable during rent-free period.", "source": "static" }
+        ]
+      },
+      {
+        "section": "7. Conditions",
+        "fields": [
+          { "label": "Subject To", "value": "Execution of a formal lease agreement in MAF's standard form", "source": "static" },
+          { "label": "Governing Law", "value": "{{governing_law}}", "source": "derived: UAE law for UAE malls, Bahrain law for CCB" },
+          { "label": "EJARI Registration", "value": "{{ejari_required}}", "source": "derived: true if unit.mall in Dubai" },
+          { "label": "HoT Validity", "value": "This HoT expires 14 days from date of issue unless a lease is executed.", "source": "static" }
+        ]
+      }
+    ],
+
+    "agent_validation_checks": [
+      "base_rent_aed_sqm must be within pricing.base_rent_aed_sqm_min and base_rent_aed_sqm_max",
+      "fit_out_months must not exceed pricing.max_fit_out_months",
+      "rent_free_months must not exceed pricing.rent_free_months_allowed",
+      "lease_start_date must equal fit_out_start_date + fit_out_months",
+      "security_deposit_aed must equal (annual_base_rent_aed / 12) × security_deposit_months",
+      "total_annual_occupancy_cost_aed must equal base + service_charge + marketing_levy (no turnover included in headline)",
+      "governing_law must match mall country",
+      "ejari_required must be true for all Dubai malls"
+    ]
+  },
+
+  "example_populated": {
+    "inquiry_id": "INQ-2026-0041",
+    "brand_name": "Summit Gear Co.",
+    "legal_entity_name": "Summit Gear Trading LLC",
+    "mall_name": "Mall of the Emirates",
+    "unit_id": "MOE-L1-042",
+    "floor": "Level 1",
+    "zone": "Sports & Outdoor",
+    "size_sqm": 265,
+    "category": "Premium outdoor & adventure gear retail",
+    "term_years": 3,
+    "fit_out_months": 3.5,
+    "fit_out_start_date": "2026-05-01",
+    "lease_start_date": "2026-08-16",
+    "lease_expiry_date": "2029-08-15",
+    "base_rent_aed_sqm": 2600,
+    "annual_base_rent_aed": 689000,
+    "service_charge_aed_sqm": 420,
+    "marketing_levy_aed_sqm": 85,
+    "turnover_rent_pct": 8,
+    "total_annual_occupancy_cost_aed": 822825,
+    "security_deposit_aed": 172250,
+    "fit_out_deposit_aed": 57416,
+    "rent_free_months": 0,
+    "governing_law": "UAE Law / Dubai Courts",
+    "ejari_required": true
+  }
+}

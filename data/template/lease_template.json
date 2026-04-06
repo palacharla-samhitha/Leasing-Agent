@@ -1,0 +1,166 @@
+{
+  "template_id": "LSE-TPL-001",
+  "template_name": "Standard Retail Lease Agreement",
+  "version": "3.4",
+  "last_updated": "2026-02-01",
+  "kofax_template_ref": "KFX-RETAIL-STD-3.4",
+  "description": "Kofax-generated lease document template for standard retail units in Dubai. Agent triggers Kofax with populated fields and runs consistency check against Yardi deal entry.",
+
+  "kofax_trigger_payload": {
+    "template_ref": "KFX-RETAIL-STD-3.4",
+    "output_format": "PDF",
+    "delivery_channel": "partner_connect",
+    "fields": {
+      "parties": {
+        "landlord_name": "{{landlord_name}}",
+        "landlord_crn": "{{landlord_crn}}",
+        "tenant_legal_entity": "{{legal_entity_name}}",
+        "tenant_trade_license": "{{trade_license_no}}",
+        "tenant_vat_no": "{{vat_registration_no}}",
+        "tenant_signatory_name": "{{signatory_name}}",
+        "tenant_signatory_title": "{{signatory_title}}",
+        "poa_reference": "{{poa_reference}}"
+      },
+      "premises": {
+        "mall_name": "{{mall_name}}",
+        "unit_id": "{{unit_id}}",
+        "floor": "{{floor}}",
+        "zone": "{{zone}}",
+        "size_sqm": "{{size_sqm}}",
+        "permitted_use": "{{category}}"
+      },
+      "dates": {
+        "agreement_date": "{{agreement_date}}",
+        "fit_out_start_date": "{{fit_out_start_date}}",
+        "fit_out_end_date": "{{fit_out_end_date}}",
+        "lease_commencement_date": "{{lease_start_date}}",
+        "rent_commencement_date": "{{rent_commencement_date}}",
+        "lease_expiry_date": "{{lease_expiry_date}}"
+      },
+      "financials": {
+        "base_rent_aed_sqm": "{{base_rent_aed_sqm}}",
+        "annual_base_rent_aed": "{{annual_base_rent_aed}}",
+        "service_charge_aed_sqm": "{{service_charge_aed_sqm}}",
+        "marketing_levy_aed_sqm": "{{marketing_levy_aed_sqm}}",
+        "turnover_rent_pct": "{{turnover_rent_pct}}",
+        "turnover_rent_threshold_aed": "{{turnover_rent_threshold_aed}}",
+        "rent_free_months": "{{rent_free_months}}",
+        "payment_schedule": "quarterly_advance",
+        "security_deposit_aed": "{{security_deposit_aed}}",
+        "fit_out_deposit_aed": "{{fit_out_deposit_aed}}"
+      },
+      "legal": {
+        "governing_law": "{{governing_law}}",
+        "dispute_resolution": "{{dispute_resolution}}",
+        "ejari_registration_required": "{{ejari_required}}",
+        "rera_applicable": "{{rera_applicable}}"
+      }
+    }
+  },
+
+  "consistency_checks": [
+    {
+      "check_id": "CC-01",
+      "description": "Lease commencement date = fit-out end date + 1 day",
+      "yardi_field": "lease_start_date",
+      "kofax_field": "fields.dates.lease_commencement_date",
+      "rule": "kofax.lease_commencement_date == yardi.fit_out_end_date + 1 day"
+    },
+    {
+      "check_id": "CC-02",
+      "description": "Rent commencement = lease commencement (unless rent-free period applies)",
+      "yardi_field": "rent_commencement_date",
+      "kofax_field": "fields.dates.rent_commencement_date",
+      "rule": "if rent_free_months == 0: kofax.rent_commencement_date == kofax.lease_commencement_date; else: kofax.rent_commencement_date == lease_commencement_date + rent_free_months"
+    },
+    {
+      "check_id": "CC-03",
+      "description": "Annual base rent = base_rent_aed_sqm × size_sqm",
+      "yardi_field": "annual_base_rent_aed",
+      "kofax_field": "fields.financials.annual_base_rent_aed",
+      "rule": "abs(kofax.annual_base_rent_aed - (base_rent_aed_sqm × size_sqm)) < 1"
+    },
+    {
+      "check_id": "CC-04",
+      "description": "Security deposit = (annual_base_rent / 12) × security_deposit_months",
+      "yardi_field": "security_deposit_aed",
+      "kofax_field": "fields.financials.security_deposit_aed",
+      "rule": "abs(kofax.security_deposit_aed - ((annual_base_rent_aed / 12) × security_deposit_months)) < 1"
+    },
+    {
+      "check_id": "CC-05",
+      "description": "Legal entity name in Kofax matches Yardi exactly",
+      "yardi_field": "legal_entity_name",
+      "kofax_field": "fields.parties.tenant_legal_entity",
+      "rule": "kofax.tenant_legal_entity == yardi.legal_entity_name (case-insensitive, trimmed)"
+    },
+    {
+      "check_id": "CC-06",
+      "description": "Unit ID in Kofax matches Yardi deal entry",
+      "yardi_field": "unit_id",
+      "kofax_field": "fields.premises.unit_id",
+      "rule": "kofax.unit_id == yardi.unit_id"
+    },
+    {
+      "check_id": "CC-07",
+      "description": "EJARI flag is true for all Dubai units",
+      "yardi_field": "ejari_applicable",
+      "kofax_field": "fields.legal.ejari_registration_required",
+      "rule": "if yardi.mall in dubai_malls: kofax.ejari_registration_required == true"
+    }
+  ],
+
+  "example_populated": {
+    "kofax_trigger_payload_example": {
+      "template_ref": "KFX-RETAIL-STD-3.4",
+      "output_format": "PDF",
+      "delivery_channel": "partner_connect",
+      "fields": {
+        "parties": {
+          "landlord_name": "Majid Al Futtaim Properties LLC",
+          "landlord_crn": "CRN-DED-MAF-2001-001",
+          "tenant_legal_entity": "Summit Gear Trading LLC",
+          "tenant_trade_license": "TL-DED-2024-88321",
+          "tenant_vat_no": "100382910400003",
+          "tenant_signatory_name": "James Whitfield",
+          "tenant_signatory_title": "Regional Director — MENA",
+          "poa_reference": "POA-UAE-2025-0042"
+        },
+        "premises": {
+          "mall_name": "Mall of the Emirates",
+          "unit_id": "MOE-L1-042",
+          "floor": "Level 1",
+          "zone": "Sports & Outdoor",
+          "size_sqm": 265,
+          "permitted_use": "Premium outdoor and adventure gear retail"
+        },
+        "dates": {
+          "agreement_date": "2026-04-10",
+          "fit_out_start_date": "2026-05-01",
+          "fit_out_end_date": "2026-08-15",
+          "lease_commencement_date": "2026-08-16",
+          "rent_commencement_date": "2026-08-16",
+          "lease_expiry_date": "2029-08-15"
+        },
+        "financials": {
+          "base_rent_aed_sqm": 2600,
+          "annual_base_rent_aed": 689000,
+          "service_charge_aed_sqm": 420,
+          "marketing_levy_aed_sqm": 85,
+          "turnover_rent_pct": 8,
+          "turnover_rent_threshold_aed": 5000000,
+          "rent_free_months": 0,
+          "payment_schedule": "quarterly_advance",
+          "security_deposit_aed": 172250,
+          "fit_out_deposit_aed": 57416
+        },
+        "legal": {
+          "governing_law": "UAE Law / Dubai Courts",
+          "dispute_resolution": "Dubai Courts",
+          "ejari_registration_required": true,
+          "rera_applicable": true
+        }
+      }
+    }
+  }
+}
