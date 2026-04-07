@@ -85,3 +85,7 @@ cd ai-leasing-agent
 | EJARI | Simulated filing | Live government API — legally binding |
 | Geography | Dubai only | UAE, Oman, Egypt, Bahrain, KSA |
 | Auth | Open | Azure AD + Purview + PDPL-compliant access controls |
+
+## Commands to run data
+
+python tools\test_tools.py
