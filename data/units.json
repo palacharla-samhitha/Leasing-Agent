@@ -18,7 +18,16 @@
     "last_tenant": "Zara",
     "vacancy_since": "2026-01-15",
     "category_fit": ["fashion", "premium retail", "accessories"],
-    "notes": "Corner unit, high footfall, near VOX entrance"
+    "notes": "Corner unit, high footfall, near VOX entrance",
+    "vacancy_plan": {
+      "priority": true,
+      "demand_category": "fashion & premium retail",
+      "demand_score": 0.82,
+      "demand_signal": "Fashion District anchor vacancy since Jan — footfall steady but conversion dropping without flagship. Premium fashion or lifestyle brand needed to restore zone draw.",
+      "vacancy_days": 83,
+      "footfall_tier": "premium",
+      "target_tenant_profile": "Premium fashion, lifestyle or accessories brand, 200–300 sqm, strong regional brand recognition"
+    }
   },
   {
     "unit_id": "MOE-L1-107",
@@ -39,7 +48,16 @@
     "last_tenant": "Intersport",
     "lease_expiry": "2026-06-30",
     "category_fit": ["sports", "outdoor", "adventure gear", "fitness"],
-    "notes": "Adjacent to Ski Dubai entrance — ideal for outdoor/adventure brands"
+    "notes": "Adjacent to Ski Dubai entrance — ideal for outdoor/adventure brands",
+    "vacancy_plan": {
+      "priority": true,
+      "demand_category": "sports & outdoor",
+      "demand_score": 0.91,
+      "demand_signal": "Ski Dubai adjacency drives 34% higher footfall YoY in this zone. Only 3 sports tenants remain — category undersupplied. Intersport exit creates gap for premium outdoor brand.",
+      "vacancy_days": 0,
+      "footfall_tier": "premium",
+      "target_tenant_profile": "Premium to mid-market sports or outdoor brand, 150–250 sqm, experiential retail preferred"
+    }
   },
   {
     "unit_id": "CCD-GF-018",
@@ -60,7 +78,16 @@
     "last_tenant": "Decathlon",
     "vacancy_since": "2026-02-01",
     "category_fit": ["sports", "outdoor", "adventure gear", "camping"],
-    "notes": "Large ground floor unit, strong family footfall, parking access"
+    "notes": "Large ground floor unit, strong family footfall, parking access",
+    "vacancy_plan": {
+      "priority": true,
+      "demand_category": "sports & outdoor",
+      "demand_score": 0.78,
+      "demand_signal": "Decathlon exit left Sports Zone anchor gap. Family footfall strong but zone needs category refresh. Ground floor parking adjacency suits bulky-goods retail.",
+      "vacancy_days": 67,
+      "footfall_tier": "high",
+      "target_tenant_profile": "Mid-market sports, outdoor or adventure brand, 200–350 sqm, family-oriented positioning preferred"
+    }
   },
   {
     "unit_id": "CCM-L2-055",
@@ -81,7 +108,16 @@
     "last_tenant": "Columbia Sportswear",
     "vacancy_since": "2026-03-01",
     "category_fit": ["lifestyle", "outdoor", "sports", "adventure"],
-    "notes": "Informal hold by leasing team pending internal review — not available without clearance"
+    "notes": "Informal hold by leasing team pending internal review — not available without clearance",
+    "vacancy_plan": {
+      "priority": false,
+      "demand_category": "lifestyle & family",
+      "demand_score": 0.55,
+      "demand_signal": "Unit held informally — demand assessment paused pending leasing team decision. Lifestyle & Leisure zone performing at 94% occupancy.",
+      "vacancy_days": 38,
+      "footfall_tier": "high",
+      "target_tenant_profile": "Lifestyle, kids or family entertainment brand, 120–200 sqm"
+    }
   },
   {
     "unit_id": "MOE-L2-088",
@@ -101,7 +137,46 @@
     "typical_fit_out_months": 4,
     "signed_tenant": "Confidential F&B Brand",
     "category_fit": ["f&b", "dining", "cafe"],
-    "notes": "Already signed — NOT available"
+    "notes": "Already signed — NOT available",
+    "vacancy_plan": {
+      "priority": false,
+      "demand_category": "f&b & dining",
+      "demand_score": 0.00,
+      "demand_signal": "Unit signed — no vacancy. New F&B tenant onboarding in progress.",
+      "vacancy_days": 0,
+      "footfall_tier": "premium",
+      "target_tenant_profile": "N/A — unit occupied"
+    }
+  },
+  {
+    "unit_id": "CCM-GF-012",
+    "mall": "City Centre Mirdif",
+    "mall_code": "CCM",
+    "floor": "Ground Floor",
+    "zone": "Dining & Lifestyle",
+    "unit_type": "f&b",
+    "size_sqm": 120,
+    "frontage_m": 5.0,
+    "status": "vacant",
+    "base_rent_aed_sqm": 2300,
+    "service_charge_aed_sqm": 400,
+    "marketing_levy_aed_sqm": 80,
+    "turnover_rent_pct": 8,
+    "fit_out_allowance_aed": 90000,
+    "typical_fit_out_months": 3,
+    "last_tenant": "The Coffee Club",
+    "vacancy_since": "2026-02-15",
+    "category_fit": ["f&b", "cafe", "coffee", "wellness", "specialty dining"],
+    "notes": "Ground floor, good visibility from main atrium, previous F&B tenant",
+    "vacancy_plan": {
+      "priority": true,
+      "demand_category": "specialty f&b & wellness",
+      "demand_score": 0.80,
+      "demand_signal": "Dining & Lifestyle zone at 88% occupancy — specialty coffee and wellness F&B strongly demanded. Previous tenant exit left gap in premium café segment.",
+      "vacancy_days": 52,
+      "footfall_tier": "high",
+      "target_tenant_profile": "Specialty coffee, wellness café or healthy dining concept, 80–150 sqm, experiential format preferred"
+    }
   },
   {
     "unit_id": "CCA-GF-003",
@@ -121,6 +196,15 @@
     "typical_fit_out_months": 2,
     "last_tenant": null,
     "category_fit": ["general retail"],
-    "notes": "Held for anchor tenant reconfiguration — leasing team approval required"
+    "notes": "Held for anchor tenant reconfiguration — leasing team approval required",
+    "vacancy_plan": {
+      "priority": false,
+      "demand_category": "anchor reconfiguration",
+      "demand_score": 0.30,
+      "demand_signal": "Unit held for potential anchor tenant expansion. Strategic hold — not in active leasing pipeline until reconfiguration decision is made.",
+      "vacancy_days": 0,
+      "footfall_tier": "high",
+      "target_tenant_profile": "N/A — strategic hold pending anchor decision"
+    }
   }
 ]

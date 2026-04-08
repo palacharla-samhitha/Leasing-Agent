@@ -17,9 +17,16 @@ class LeasingAgentState(TypedDict):
                                         # size_max, preferred_mall, priority,
                                         # financial_profile, special_requirements
 
+    # ── Lead Scoring (Stage 2 — Tenant Qualification) ─────────────────────────
+    lead_score_result: Optional[dict]   # Output from calculate_lead_score()
+                                        # keys: lead_score, lead_grade,
+                                        # signals_positive, signals_negative, reasoning
+
     # ── Unit Matching ─────────────────────────────────────────────────────────
     matched_units: List[dict]           # Units returned and ranked by node_unit_match
+                                        # Each unit now includes _scoring data
     selected_unit: Optional[dict]       # Unit confirmed by human at Gate 1
+    weak_match_warning: Optional[str]   # Populated if top unit match_score < 0.50
 
     # ── Heads of Terms ────────────────────────────────────────────────────────
     hot_draft: Optional[dict]           # Agent-generated HoT from node_hot_draft
@@ -68,9 +75,13 @@ def get_initial_state(inquiry: dict) -> LeasingAgentState:
         # Intake
         classification=None,
 
+        # Lead scoring
+        lead_score_result=None,
+
         # Unit matching
         matched_units=[],
         selected_unit=None,
+        weak_match_warning=None,
 
         # HoT
         hot_draft=None,
@@ -100,6 +111,6 @@ def get_initial_state(inquiry: dict) -> LeasingAgentState:
         current_step="node_intake",
         gate_decision=None,
         gate_edits=None,
-        rejection_reason=None,  
+        rejection_reason=None,
         errors=[],
     )
