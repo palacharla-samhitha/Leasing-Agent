@@ -6,6 +6,7 @@ import json
 import streamlit as st
 from agent.graph import leasing_graph
 from agent.state import get_initial_state
+from utils.pdf_generator import generate_ejari_pdf
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -68,6 +69,46 @@ st.markdown("""
     .status-fail    { color: #ff4444; font-weight: bold; }
     .deal-closed    { background: #0d3d2e; color: #00c4b4; padding: 1.5rem;
                       border-radius: 8px; text-align: center; }
+
+    .grade-badge {
+        display: inline-block;
+        padding: 0.15rem 0.6rem;
+        border-radius: 12px;
+        font-weight: 600;
+        font-size: 0.85rem;
+    }
+    .grade-a { background: #0d3d2e; color: #00c4b4; }
+    .grade-b { background: #2d1f00; color: #ffaa00; }
+    .grade-c { background: #3d0d0d; color: #ff4444; }
+
+    .score-card {
+        background: #f0f4f8;
+        border: 1px solid #d0d8e0;
+        border-radius: 8px;
+        padding: 0.75rem;
+        margin-bottom: 0.5rem;
+    }
+    .score-label { font-size: 0.75rem; color: #666; margin-bottom: 0.2rem; }
+    .score-value { font-size: 1.1rem; font-weight: 600; }
+
+    .demand-signal {
+        background: #e8f4fd;
+        border-left: 3px solid #4a9eff;
+        padding: 0.6rem 0.8rem;
+        border-radius: 4px;
+        font-size: 0.82rem;
+        color: #1a3a5c;
+        margin-top: 0.4rem;
+    }
+    .weak-warning {
+        background: #fff3cd;
+        border: 1px solid #ffaa00;
+        padding: 0.6rem 0.8rem;
+        border-radius: 6px;
+        font-size: 0.85rem;
+        color: #856404;
+        margin-bottom: 1rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -78,7 +119,7 @@ def init_session():
         "graph_state": None,
         "thread_id": "leasing-demo-001",
         "running": False,
-        "waiting_at_gate": None,   # "gate_1" | "gate_2" | "gate_3" | None
+        "waiting_at_gate": None,
         "selected_inquiry": None,
         "config": {"configurable": {"thread_id": "leasing-demo-001"}},
     }
@@ -101,8 +142,8 @@ inquiry_options = {i["brand_name"]: i for i in inquiries}
 
 # ── Step definitions ──────────────────────────────────────────────────────────
 STEPS = [
-    ("node_intake",     "1. Inquiry Intake",         "agent"),
-    ("node_unit_match", "2. Unit Matching",           "agent"),
+    ("node_intake",     "1. Intake & Lead Scoring",  "agent"),
+    ("node_unit_match", "2. Unit Match & Scoring",    "agent"),
     ("node_hot_draft",  "3. Heads of Terms Draft",   "agent"),
     ("gate_1",          "⚑ Gate 1 — Exec Review",    "gate"),
     ("node_doc_request","4. Document Request",        "agent"),
@@ -132,28 +173,23 @@ def get_step_class(step_key: str, current_step: str) -> str:
     return "step-gate" if "gate" in step_key else "step-pending"
 
 
+def get_grade_css(grade: str) -> str:
+    return {"A": "grade-a", "B": "grade-b", "C": "grade-c"}.get(grade, "grade-b")
+
+
 # ── Graph runner ──────────────────────────────────────────────────────────────
 def run_graph_until_gate(initial_state=None):
-    """
-    Runs the graph from start or resumes from last interrupt.
-    Stops at next gate or END.
-    """
     cfg = st.session_state["config"]
-
     if initial_state:
-        # Fresh start
         for _ in leasing_graph.stream(initial_state, cfg):
             pass
     else:
-        # Resume after human gate input
         for _ in leasing_graph.stream(None, cfg):
             pass
 
-    # Get latest state
     snapshot = leasing_graph.get_state(cfg)
     st.session_state["graph_state"] = snapshot.values
 
-    # Check if paused at a gate
     next_nodes = snapshot.next
     if next_nodes and any("gate" in n for n in next_nodes):
         st.session_state["waiting_at_gate"] = next_nodes[0]
@@ -162,14 +198,12 @@ def run_graph_until_gate(initial_state=None):
 
 
 def resume_after_gate(gate_decision: str, gate_edits: dict = None, rejection_reason: str = None):
-    """Updates state with human decision then resumes the graph."""
     cfg = st.session_state["config"]
     updates = {
         "gate_decision": gate_decision,
         "gate_edits": gate_edits or {},
         "rejection_reason": rejection_reason or "",
     }
-    # Apply human edits to approved fields
     if gate_decision in ("approve", "edit") and gate_edits:
         if st.session_state["waiting_at_gate"] == "gate_1":
             updates["hot_approved"] = gate_edits.get("hot_approved",
@@ -199,7 +233,6 @@ def render_json_output(data: dict, title: str = ""):
 
 
 def render_step_log(state: dict, step_key: str):
-    """Find and render the reasoning log entry for a given step."""
     for entry in state.get("reasoning_log", []):
         if entry["step"] == step_key:
             render_reasoning(entry["reasoning"])
@@ -211,31 +244,101 @@ def render_step_log(state: dict, step_key: str):
 def render_gate_1(state: dict):
     st.markdown('<div class="gate-box">', unsafe_allow_html=True)
     st.markdown("### ⚑ Gate 1 — Leasing Executive Review")
-    st.markdown("Review the matched units and Heads of Terms. Edit any fields before approving.")
+    st.markdown("Review lead qualification, matched units, and Heads of Terms.")
 
+    # ── Lead Score Summary ────────────────────────────────────────────────
+    lead = state.get("lead_score_result") or {}
+    if lead:
+        grade = lead.get("lead_grade", "?")
+        score = lead.get("lead_score", 0)
+        grade_css = get_grade_css(grade)
+
+        st.markdown("#### Tenant Lead Score")
+        lc1, lc2, lc3 = st.columns([1, 1, 2])
+        with lc1:
+            st.markdown(f'<div class="score-card"><div class="score-label">Lead Score</div>'
+                        f'<div class="score-value">{score:.2f}</div></div>',
+                        unsafe_allow_html=True)
+        with lc2:
+            st.markdown(f'<div class="score-card"><div class="score-label">Grade</div>'
+                        f'<div class="score-value"><span class="grade-badge {grade_css}">'
+                        f'{grade}</span></div></div>',
+                        unsafe_allow_html=True)
+        with lc3:
+            st.markdown(f'<div class="score-card"><div class="score-label">Assessment</div>'
+                        f'<div style="font-size:0.82rem">{lead.get("reasoning", "")}</div></div>',
+                        unsafe_allow_html=True)
+
+        # Positive / negative signals
+        pos = lead.get("signals_positive", [])
+        neg = lead.get("signals_negative", [])
+        if pos or neg:
+            with st.expander("Lead Score Signals", expanded=False):
+                if pos:
+                    for s in pos:
+                        st.markdown(f"✅ {s}")
+                if neg:
+                    for s in neg:
+                        st.markdown(f"⚠️ {s}")
+
+    # ── Weak Match Warning ────────────────────────────────────────────────
+    warn = state.get("weak_match_warning")
+    if warn:
+        st.markdown(f'<div class="weak-warning">⚠️ {warn}</div>', unsafe_allow_html=True)
+
+    # ── Matched Units with Scoring ────────────────────────────────────────
     matched = state.get("matched_units", [])
-    hot = state.get("hot_draft", {})
+    hot = state.get("hot_draft") or {}
 
-    # Unit selection
     st.markdown("#### Matched Units")
     unit_ids = [u.get("unit_id", "") for u in matched]
     if not unit_ids:
         st.warning("No units matched. Reject to loop back.")
         selected_uid = None
     else:
-        cols = st.columns(len(unit_ids))
-        for i, (col, unit) in enumerate(zip(cols, matched)):
-            with col:
-                st.markdown(f"**{unit.get('unit_id')}**")
-                st.caption(f"{unit.get('mall')} · {unit.get('floor')}")
-                st.caption(f"{unit.get('size_sqm')} sqm · AED {unit.get('base_rent_aed_sqm'):,}/sqm")
-                score = unit.get('match_score', 0)
-                st.progress(score, text=f"Match: {score:.0%}")
-                st.caption(unit.get("rationale", ""))
+        for unit in matched:
+            scoring = unit.get("_scoring", {})
+            m_score = scoring.get("match_score", unit.get("match_score", 0))
+            l_score = scoring.get("lead_score", 0)
+            d_score = scoring.get("vacancy_demand_score", 0)
+            m_status = scoring.get("match_status", "unknown")
+            cat_match = scoring.get("category_match", False)
+            demand_sig = scoring.get("demand_signal", "")
+            ft_tier = scoring.get("footfall_tier", "standard")
+
+            with st.container():
+                uc1, uc2, uc3, uc4 = st.columns([1.5, 1, 1, 1])
+                with uc1:
+                    st.markdown(f"**{unit.get('unit_id', '')}**")
+                    st.caption(f"{unit.get('mall', '')} · {unit.get('zone', '')}")
+                    st.caption(f"{unit.get('size_sqm', 0)} sqm · AED {unit.get('base_rent_aed_sqm', 0):,}/sqm")
+                with uc2:
+                    status_color = "#00c4b4" if m_status == "strong" else "#ffaa00" if m_status == "moderate" else "#ff4444"
+                    st.markdown(f'<div class="score-card"><div class="score-label">Match</div>'
+                                f'<div class="score-value" style="color:{status_color}">'
+                                f'{m_score:.2f}</div></div>', unsafe_allow_html=True)
+                with uc3:
+                    st.markdown(f'<div class="score-card"><div class="score-label">Demand</div>'
+                                f'<div class="score-value">{d_score:.2f}</div></div>',
+                                unsafe_allow_html=True)
+                with uc4:
+                    cat_icon = "✅" if cat_match else "❌"
+                    st.markdown(f'<div class="score-card"><div class="score-label">Category</div>'
+                                f'<div class="score-value">{cat_icon} {ft_tier.title()}</div></div>',
+                                unsafe_allow_html=True)
+
+                if demand_sig:
+                    st.markdown(f'<div class="demand-signal">📊 {demand_sig}</div>',
+                                unsafe_allow_html=True)
+
+                rationale = unit.get("rationale", "")
+                if rationale:
+                    st.caption(rationale)
+                st.markdown("---")
 
         selected_uid = st.selectbox("Select unit to proceed with", unit_ids)
 
-    # HoT editable form
+    # ── HoT editable form ─────────────────────────────────────────────────
     st.markdown("#### Heads of Terms")
     if hot:
         col1, col2, col3 = st.columns(3)
@@ -261,13 +364,14 @@ def render_gate_1(state: dict):
         rent = fit_out = duration = escalation = deposit_months = rent_free = 0
         notes = ""
 
-    # Approve / Reject
+    # ── Approve / Reject ──────────────────────────────────────────────────
     st.markdown("---")
     col_a, col_r = st.columns([1, 1])
     with col_a:
         if st.button("✅ Approve & Proceed", type="primary", use_container_width=True):
             selected_unit = next((u for u in matched if u.get("unit_id") == selected_uid), None)
-            edited_hot = {**hot,
+            edited_hot = {
+                **(hot or {}),
                 "base_rent_aed_sqm": rent,
                 "fit_out_months": fit_out,
                 "lease_duration_years": duration,
@@ -299,7 +403,6 @@ def render_gate_2(state: dict):
     docs_received = state.get("documents_received", {})
     issues = state.get("document_issues", [])
 
-    # Document table
     submitted = docs_received.get("documents_submitted", [])
     missing = docs_received.get("missing_documents", [])
 
@@ -364,7 +467,6 @@ def render_gate_3(state: dict):
             st.metric("Lease End", lease.get("lease_end_date", "—"))
             st.metric("Security Deposit", f"AED {lease.get('security_deposit_aed', 0):,}")
 
-        # Consistency check result
         if check:
             status = check.get("status", "unknown")
             issues = check.get("issues_found", 0)
@@ -404,7 +506,6 @@ def render_gate_3(state: dict):
 def render_main_output(state: dict, waiting_at_gate: str):
     current = state.get("current_step", "node_intake")
 
-    # Show completed steps
     for entry in state.get("reasoning_log", []):
         step = entry["step"]
         label = next((s[1] for s in STEPS if s[0] == step), step)
@@ -412,7 +513,6 @@ def render_main_output(state: dict, waiting_at_gate: str):
             render_reasoning(entry["reasoning"])
             st.json(entry["output"])
 
-    # Show active gate
     if waiting_at_gate == "gate_1":
         render_gate_1(state)
     elif waiting_at_gate == "gate_2":
@@ -420,7 +520,6 @@ def render_main_output(state: dict, waiting_at_gate: str):
     elif waiting_at_gate == "gate_3":
         render_gate_3(state)
 
-    # Deal closed
     if current == "complete" or state.get("deal_closed"):
         cert = state.get("ejari_certificate", {})
         st.markdown(f"""
@@ -432,7 +531,21 @@ def render_main_output(state: dict, waiting_at_gate: str):
         </div>
         """, unsafe_allow_html=True)
 
-    # Errors
+        # EJARI Certificate PDF download
+        try:
+            ejari_pdf = generate_ejari_pdf(state)
+            brand = state.get("inquiry", {}).get("brand_name", "Tenant")
+            filename = f"EJARI_Certificate_{brand.replace(' ', '_')}.pdf"
+            st.download_button(
+                "📄 Download EJARI Certificate (PDF)",
+                ejari_pdf,
+                file_name=filename,
+                mime="application/pdf",
+                use_container_width=True
+            )
+        except Exception as e:
+            st.error(f"PDF generation failed: {e}")
+
     if state.get("errors"):
         with st.expander("⚠️ Errors"):
             for e in state["errors"]:
@@ -441,15 +554,13 @@ def render_main_output(state: dict, waiting_at_gate: str):
 
 # ── Layout ────────────────────────────────────────────────────────────────────
 
-# Header
 st.markdown("""
 <div class="main-header">
     <h1>🏢 AI Leasing Agent — MAF Properties</h1>
-    <p>Agentic leasing workflow · Inquiry → Unit Match → HoT → Documents → Lease → EJARI</p>
+    <p>Agentic leasing workflow · Intake & Lead Scoring → Unit Match & Demand Scoring → HoT → Documents → Lease → EJARI</p>
 </div>
 """, unsafe_allow_html=True)
 
-# Three columns
 left, main, right = st.columns([1.2, 3, 1.2])
 
 # ── LEFT — Step progress ──────────────────────────────────────────────────────
@@ -459,7 +570,6 @@ with left:
     current_step = state.get("current_step", "node_intake") if state else "node_intake"
     waiting = st.session_state.get("waiting_at_gate")
 
-    # If waiting at gate, highlight the gate
     display_step = waiting if waiting else current_step
 
     for step_key, label, kind in STEPS:
@@ -475,7 +585,6 @@ with left:
 # ── MAIN — Agent output + gates ───────────────────────────────────────────────
 with main:
     if not st.session_state["graph_state"]:
-        # Start screen
         st.markdown("### Select an inquiry to begin")
         selected_name = st.selectbox("Choose tenant inquiry",
                                      list(inquiry_options.keys()))
@@ -497,12 +606,11 @@ with main:
         """)
 
         if st.button("🚀 Start Leasing Workflow", type="primary", use_container_width=True):
-            # Reset thread for fresh run
             st.session_state["config"] = {
                 "configurable": {"thread_id": f"leasing-{inquiry['inquiry_id']}"}
             }
             initial_state = get_initial_state(inquiry)
-            with st.spinner("Agent running..."):
+            with st.spinner("Agent running — intake, lead scoring, unit matching, HoT drafting..."):
                 run_graph_until_gate(initial_state=initial_state)
             st.rerun()
     else:
@@ -510,7 +618,6 @@ with main:
         waiting = st.session_state["waiting_at_gate"]
         render_main_output(state, waiting)
 
-    # Reset button
     if st.session_state["graph_state"]:
         st.markdown("---")
         if st.button("🔄 Start New Deal", use_container_width=True):
@@ -524,10 +631,22 @@ with right:
     st.markdown("#### State Viewer")
     state = st.session_state.get("graph_state")
     if state:
+        # Lead score quick view
+        lead = state.get("lead_score_result")
+        if lead:
+            grade = lead.get("lead_grade", "?")
+            grade_css = get_grade_css(grade)
+            st.markdown(f'Lead: <span class="grade-badge {grade_css}">{grade}</span> '
+                        f'({lead.get("lead_score", 0):.2f})', unsafe_allow_html=True)
+
+        # Match warning
+        warn = state.get("weak_match_warning")
+        if warn:
+            st.warning(warn)
+
         with st.expander("Full State JSON", expanded=False):
             st.json(state)
 
-        # Quick stats
         st.markdown("**Current step:**")
         st.code(state.get("current_step", "—"))
 

@@ -34,16 +34,29 @@ Never recommend units with status: signed_unoccupied, reserved_informally, or he
 """.strip()
 
 
-# ── Node 1 — Intake & Classification ─────────────────────────────────────────
+# ── Node 1 — Intake & Classification (Stage 1 + Stage 2) ─────────────────────
 
 INTAKE_PROMPT = BASE_PROMPT + """
 
-YOUR TASK — INQUIRY INTAKE & CLASSIFICATION:
-You have received a new leasing inquiry. Your job is to:
+YOUR TASK — INQUIRY INTAKE, CLASSIFICATION & LEAD QUALIFICATION:
+
+This node covers two stages of the MAF leasing lifecycle:
+- Stage 1: Vacancy ID & Space Planning — understanding what this tenant needs
+- Stage 2: Tenant Prospecting & Qualification — assessing how good this tenant is
+
+You have received a new leasing inquiry AND a pre-calculated lead score from
+the scoring model. Your job is to:
+
 1. Classify the inquiry by tenant type, category, and priority
 2. Extract all key requirements — size, location, zone preferences, special needs
-3. Assess the tenant's quality and fit for MAF's portfolio
-4. Flag anything missing, unusual, or that needs attention (e.g. first UAE store, risk flags)
+3. Interpret the lead score — explain in commercial terms what the grade means
+4. Assess the tenant's strategic fit for MAF's portfolio (not just financial fit)
+5. Flag anything missing, unusual, or that needs attention
+
+LEAD SCORE INTERPRETATION:
+- Grade A (≥ 0.75): High-confidence tenant. Established, clean, strong channel. Fast-track.
+- Grade B (0.55–0.74): Solid tenant with some flags. Proceed but exec should review signals.
+- Grade C (< 0.55): Weak or risky lead. Compliance concerns, missing info, or poor channel. Flag for review.
 
 Your output must follow this exact structure:
 {
@@ -61,24 +74,46 @@ Your output must follow this exact structure:
         "risk_flags": ["list of flags or empty list"],
         "special_requirements": ["list or empty list"],
         "missing_information": ["list of anything missing or empty list"],
-        "agent_assessment": "2-3 sentence commercial assessment of this tenant and inquiry"
+        "lead_assessment": "2-3 sentence interpretation of the lead score in commercial terms — what the grade means for this deal and what the leasing exec should know",
+        "agent_assessment": "2-3 sentence overall commercial assessment combining classification and lead quality"
     }
 }
 """.strip()
 
 
-# ── Node 2 — Unit Matching ────────────────────────────────────────────────────
+# ── Node 2 — Unit Matching (with pre-calculated scores) ──────────────────────
 
 UNIT_MATCH_PROMPT = BASE_PROMPT + """
 
-YOUR TASK — UNIT MATCHING & RANKING:
-You have been given a classified inquiry and a list of available units from the database.
-Your job is to:
-1. Review each unit against the tenant's requirements
-2. Filter out any units that are not truly available (signed_unoccupied, held_strategically, reserved_informally)
-3. Rank the remaining units by fit — consider size, zone, category alignment, mall positioning, and brand fit
-4. Write a clear rationale for each unit you recommend
-5. Assign a match score between 0.00 and 1.00 for each recommended unit
+YOUR TASK — UNIT MATCHING, SCORING INTERPRETATION & RANKING:
+
+You have been given a classified inquiry, the tenant's lead score, and a list
+of available units. Each unit has ALREADY been scored by the matching model
+with three metrics:
+- lead_score: how good the tenant is (0–1)
+- vacancy_demand_score: how much the mall needs this category in this unit (0–1)
+- match_score: weighted combination (lead × 0.4 + demand × 0.6)
+
+Your job is NOT to re-score the units. The scores are authoritative. Your job is to:
+
+1. Use the pre-calculated match_score as the PRIMARY ranking signal
+2. Explain WHY each unit scored the way it did — surface the demand signals
+3. Highlight category match or mismatch between the inquiry and the unit's demand plan
+4. Flag any unit where match_score < 0.50 with a clear warning
+5. Exclude units that are not truly available (signed_unoccupied, held_strategically, reserved_informally)
+6. Write a clear rationale for each recommended unit that a leasing exec can act on
+
+IMPORTANT: The _scoring object on each unit contains:
+- match_score, match_status (strong/moderate/weak)
+- lead_score, lead_grade
+- vacancy_demand_score
+- demand_signal (explains WHY the mall needs this category here)
+- category_match (true/false)
+- priority_unit (true/false)
+- footfall_tier (premium/high/standard)
+- match_warning (populated if moderate or weak)
+
+Use these fields in your rationale. Do not invent different scores.
 
 Your output must follow this exact structure:
 {
@@ -94,16 +129,20 @@ Your output must follow this exact structure:
                 "status": "...",
                 "base_rent_aed_sqm": 0000,
                 "match_score": 0.00,
-                "rationale": "why this unit fits this specific tenant"
+                "lead_score": 0.00,
+                "vacancy_demand_score": 0.00,
+                "category_match": true or false,
+                "demand_signal": "from the unit's vacancy plan",
+                "rationale": "why this unit fits — referencing the scores and demand signals"
             }
         ],
         "units_excluded": [
             {
                 "unit_id": "...",
-                "reason": "why this unit was excluded"
+                "reason": "why excluded — status, size mismatch, or category mismatch"
             }
         ],
-        "recommendation_summary": "1-2 sentence summary of the shortlist and top recommendation"
+        "recommendation_summary": "1-2 sentence summary including top match score and any warnings"
     }
 }
 """.strip()
