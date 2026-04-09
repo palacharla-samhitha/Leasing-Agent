@@ -2,7 +2,8 @@ from agent.state import get_initial_state
 from agent.nodes import node_intake, node_unit_match, node_hot_draft
 import json
 
-inq = json.load(open("data/inquiries.json"))[0]
+from tools.yardi import get_all_inquiries
+inq = get_all_inquiries()[0]
 state = get_initial_state(inq)
 state = node_intake(state)
 state = node_unit_match(state)

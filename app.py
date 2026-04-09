@@ -59,8 +59,8 @@ for k, v in {"graph_state": None, "thread_id": "leasing-demo-001", "running": Fa
 # ── Load inquiries ────────────────────────────────────────────────────────────
 @st.cache_data
 def load_inquiries():
-    with open("data/inquiries.json", "r") as f:
-        return json.load(f)
+    from tools.yardi import get_all_inquiries
+    return get_all_inquiries()
 
 inquiries = load_inquiries()
 inquiry_options = {i["brand_name"]: i for i in inquiries}
@@ -231,7 +231,7 @@ def render_gate_1(state):
             rent = st.number_input("Base Rent (AED/sqm)", value=int(hot.get("base_rent_aed_sqm", 0)), step=50)
             fit_out = st.number_input("Fit-out Months", value=int(hot.get("fit_out_months", 3)), min_value=1, max_value=6)
         with c2:
-            duration = st.number_input("Lease Duration (years)", value=int(hot.get("lease_duration_years", 3)), min_value=1, max_value=10)
+            duration = st.number_input("Lease Duration (years)", value=max(1, int(hot.get("lease_duration_years") or 3)), min_value=1, max_value=10)
             escalation = st.number_input("Annual Escalation (%)", value=float(hot.get("annual_escalation_pct", 6.0)), step=0.5)
         with c3:
             dep_months = st.number_input("Security Deposit (months)", value=int(hot.get("security_deposit_months", 3)), min_value=1, max_value=6)

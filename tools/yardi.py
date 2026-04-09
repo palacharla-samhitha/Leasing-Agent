@@ -96,12 +96,12 @@ def get_available_units(
             JOIN properties p ON u.property_id = p.property_id
             WHERE u.status IN ('vacant', 'expiring_soon')
               AND u.sqm BETWEEN %s AND %s
-            ORDER BY p.name, u.unit_id
         """
         params2 = [size_min, size_max]
         if preferred_mall:
             q2 += " AND LOWER(p.name) LIKE %s"
             params2.append(f"%{preferred_mall.lower()}%")
+        q2 += " ORDER BY p.name, u.unit_id"
         cur.execute(q2, params2)
         return cur.fetchall()
 
