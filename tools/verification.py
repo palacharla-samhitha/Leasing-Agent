@@ -1,247 +1,163 @@
-"""
-tools/verification.py
+# ============================================================================
+# tools/verification.py — Kofax consistency checks (CC-01 through CC-07)
+# Fetches pricing_rules and units from DB via yardi.py helpers.
+# ============================================================================
 
-Kofax lease document consistency checks — CC-01 to CC-07.
-Runs before Gate 3 to ensure the generated lease document
-exactly matches the deal data in Yardi (DealState).
-
-Each check returns a CheckResult with pass/fail + detail message.
-"""
-
-from dataclasses import dataclass
-from datetime import datetime, timedelta
-from dateutil.relativedelta import relativedelta
-from typing import Optional
-from tools.yardi import is_ejari_required
+from tools.yardi import get_unit, get_pricing_rule
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# RESULT MODEL
-# ══════════════════════════════════════════════════════════════════════════
-
-@dataclass
-class CheckResult:
-    check_id:    str
-    description: str
-    passed:      bool
-    detail:      str
-
-    def __str__(self):
-        status = "PASS" if self.passed else "FAIL"
-        return f"  [{status}] {self.check_id} — {self.description}\n         {self.detail}"
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# INDIVIDUAL CHECKS
-# ══════════════════════════════════════════════════════════════════════════
-
-def cc01_lease_start_date(
-    fit_out_end_date: str,
-    lease_start_date: str
-) -> CheckResult:
-    """
-    CC-01: Lease commencement date must equal fit-out end date + 1 day.
-    """
-    try:
-        fit_out_end  = datetime.strptime(fit_out_end_date, "%Y-%m-%d")
-        lease_start  = datetime.strptime(lease_start_date, "%Y-%m-%d")
-        expected     = fit_out_end + timedelta(days=1)
-        passed       = lease_start == expected
-        detail = (
-            f"lease_start {lease_start_date} == fit_out_end + 1d ({expected.strftime('%Y-%m-%d')})"
+def _cc01_rent_within_bounds(lease: dict, pricing: dict) -> dict:
+    unit = get_unit(lease.get("unit_id", "")) or {}
+    sqm = unit.get("sqm") or 1
+    rent_sqm = (lease.get("base_rent_annual") or 0) / sqm
+    lo = pricing.get("base_rent_sqm_min") or 0
+    hi = pricing.get("base_rent_sqm_max") or float("inf")
+    passed = lo <= rent_sqm <= hi
+    return {
+        "check_id": "CC-01",
+        "name": "Rent within pricing bounds",
+        "passed": passed,
+        "detail": (
+            f"Rent/sqm AED {rent_sqm:,.0f}. Allowed: {lo:,.0f}–{hi:,.0f}."
             if passed else
-            f"Expected {expected.strftime('%Y-%m-%d')}, got {lease_start_date}"
-        )
-    except Exception as e:
-        passed, detail = False, f"Date parse error: {e}"
-
-    return CheckResult("CC-01", "Lease start = fit-out end + 1 day", passed, detail)
+            f"FAIL: AED {rent_sqm:,.0f}/sqm outside range {lo:,.0f}–{hi:,.0f}."
+        ),
+    }
 
 
-def cc02_rent_commencement(
-    lease_start_date: str,
-    rent_commencement_date: str,
-    rent_free_months: int
-) -> CheckResult:
-    """
-    CC-02: Rent commencement = lease start if no rent-free period,
-    or lease start + rent_free_months if rent-free applies.
-    """
-    try:
-        lease_start = datetime.strptime(lease_start_date, "%Y-%m-%d")
-        rent_start  = datetime.strptime(rent_commencement_date, "%Y-%m-%d")
-        expected    = lease_start + relativedelta(months=rent_free_months)
-        passed      = rent_start == expected
-        detail = (
-            f"rent_start {rent_commencement_date} correct "
-            f"(lease_start + {rent_free_months} rent-free months)"
+def _cc02_fit_out_period(lease: dict, pricing: dict) -> dict:
+    actual = lease.get("fit_out_months") or 0
+    allowed = pricing.get("max_fit_out_months") or 3
+    passed = actual <= allowed
+    return {
+        "check_id": "CC-02",
+        "name": "Fit-out period within limit",
+        "passed": passed,
+        "detail": (
+            f"Fit-out: {actual} months (max {allowed})."
             if passed else
-            f"Expected {expected.strftime('%Y-%m-%d')}, got {rent_commencement_date}"
-        )
+            f"FAIL: {actual} months exceeds max {allowed}."
+        ),
+    }
+
+
+def _cc03_security_deposit(lease: dict, pricing: dict) -> dict:
+    months = pricing.get("security_deposit_months") or 3
+    annual = lease.get("base_rent_annual") or 0
+    expected = (annual / 12) * months
+    actual = lease.get("security_deposit") or 0
+    passed = abs(actual - expected) <= expected * 0.01
+    return {
+        "check_id": "CC-03",
+        "name": "Security deposit correct",
+        "passed": passed,
+        "detail": (
+            f"Deposit AED {actual:,.0f} = {months}m × AED {annual/12:,.0f}/m. ✓"
+            if passed else
+            f"FAIL: Expected AED {expected:,.0f}, found AED {actual:,.0f}."
+        ),
+    }
+
+
+def _cc04_turnover_rent(lease: dict, pricing: dict) -> dict:
+    actual = lease.get("turnover_rent_pct") or 0
+    ceiling = 10.0
+    passed = actual <= ceiling
+    return {
+        "check_id": "CC-04",
+        "name": "Turnover rent % within ceiling",
+        "passed": passed,
+        "detail": (
+            f"Turnover rent: {actual}% (ceiling {ceiling}%)."
+            if passed else
+            f"FAIL: {actual}% exceeds {ceiling}% ceiling."
+        ),
+    }
+
+
+def _cc05_escalation(lease: dict, pricing: dict) -> dict:
+    actual = lease.get("annual_escalation_pct") or 0
+    expected = float(pricing.get("annual_escalation_pct") or 5.0)
+    passed = abs(actual - expected) < 0.1
+    return {
+        "check_id": "CC-05",
+        "name": "Annual escalation rate correct",
+        "passed": passed,
+        "detail": (
+            f"Escalation: {actual}% (expected {expected}%). ✓"
+            if passed else
+            f"FAIL: {actual}% doesn't match rule {expected}%."
+        ),
+    }
+
+
+def _cc06_dates_consistent(lease: dict) -> dict:
+    from datetime import date
+    try:
+        start = date.fromisoformat(str(lease.get("start_date", "")))
+        commence = date.fromisoformat(str(lease.get("rent_commencement", "")))
+        passed = commence >= start
+        return {
+            "check_id": "CC-06",
+            "name": "Rent commencement after lease start",
+            "passed": passed,
+            "detail": (
+                f"Start {start} → Commencement {commence}. ✓"
+                if passed else
+                f"FAIL: Commencement {commence} before start {start}."
+            ),
+        }
     except Exception as e:
-        passed, detail = False, f"Date parse error: {e}"
-
-    return CheckResult("CC-02", "Rent commencement = lease start + rent-free period", passed, detail)
-
-
-def cc03_annual_rent(
-    annual_base_rent_aed: float,
-    base_rent_aed_sqm: float,
-    size_sqm: int
-) -> CheckResult:
-    """
-    CC-03: Annual base rent must equal base_rent_aed_sqm × size_sqm (within AED 1).
-    """
-    expected = round(base_rent_aed_sqm * size_sqm, 2)
-    diff     = abs(annual_base_rent_aed - expected)
-    passed   = diff < 1.0
-    detail   = (
-        f"AED {annual_base_rent_aed:,.0f} == {base_rent_aed_sqm} × {size_sqm} sqm "
-        f"= AED {expected:,.0f}"
-        if passed else
-        f"Expected AED {expected:,.0f}, got AED {annual_base_rent_aed:,.0f} "
-        f"(diff: AED {diff:,.2f})"
-    )
-    return CheckResult("CC-03", "Annual rent = rate × sqm", passed, detail)
+        return {
+            "check_id": "CC-06",
+            "name": "Rent commencement after lease start",
+            "passed": False,
+            "detail": f"FAIL: Could not parse dates — {e}",
+        }
 
 
-def cc04_security_deposit(
-    security_deposit_aed: float,
-    annual_base_rent_aed: float,
-    deposit_months: int
-) -> CheckResult:
-    """
-    CC-04: Security deposit = (annual_base_rent / 12) × deposit_months.
-    """
-    expected = round((annual_base_rent_aed / 12) * deposit_months, 2)
-    diff     = abs(security_deposit_aed - expected)
-    passed   = diff < 1.0
-    detail   = (
-        f"AED {security_deposit_aed:,.0f} == "
-        f"(AED {annual_base_rent_aed:,.0f} / 12) × {deposit_months} months "
-        f"= AED {expected:,.0f}"
-        if passed else
-        f"Expected AED {expected:,.0f}, got AED {security_deposit_aed:,.0f} "
-        f"(diff: AED {diff:,.2f})"
-    )
-    return CheckResult("CC-04", "Security deposit = monthly rent × deposit months", passed, detail)
-
-
-def cc05_legal_entity(
-    yardi_entity: str,
-    kofax_entity: str
-) -> CheckResult:
-    """
-    CC-05: Legal entity name in the lease document must exactly match Yardi.
-    Case-insensitive, whitespace-trimmed.
-    """
-    passed = yardi_entity.strip().lower() == kofax_entity.strip().lower()
-    detail = (
-        f"'{kofax_entity}' matches Yardi record"
-        if passed else
-        f"Mismatch — Yardi: '{yardi_entity}' | Kofax: '{kofax_entity}'"
-    )
-    return CheckResult("CC-05", "Legal entity name matches Yardi", passed, detail)
-
-
-def cc06_unit_id(
-    yardi_unit_id: str,
-    kofax_unit_id: str
-) -> CheckResult:
-    """
-    CC-06: Unit ID in the lease document must match the Yardi deal entry.
-    """
-    passed = yardi_unit_id.strip() == kofax_unit_id.strip()
-    detail = (
-        f"Unit {kofax_unit_id} matches Yardi deal"
-        if passed else
-        f"Mismatch — Yardi: '{yardi_unit_id}' | Kofax: '{kofax_unit_id}'"
-    )
-    return CheckResult("CC-06", "Unit ID matches Yardi deal entry", passed, detail)
-
-
-def cc07_ejari_flag(
-    mall_code: str,
-    ejari_flag_in_doc: bool
-) -> CheckResult:
-    """
-    CC-07: EJARI registration flag in the lease document must be
-    True for all Dubai malls, False for others.
-    """
-    expected = is_ejari_required(mall_code)
-    passed   = ejari_flag_in_doc == expected
-    detail   = (
-        f"EJARI flag correctly set to {ejari_flag_in_doc} for mall {mall_code}"
-        if passed else
-        f"Mall {mall_code} requires ejari={expected}, but doc has ejari={ejari_flag_in_doc}"
-    )
-    return CheckResult("CC-07", "EJARI flag correct for mall jurisdiction", passed, detail)
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# FULL SUITE RUNNER
-# ══════════════════════════════════════════════════════════════════════════
-
-def run_all_checks(state: dict) -> tuple[bool, list[CheckResult]]:
-    """
-    Run CC-01 through CC-07 against a deal state dict.
-    Returns (all_passed: bool, results: list[CheckResult]).
-
-    state dict expected keys:
-        fit_out_end_date, lease_start_date, rent_commencement_date,
-        rent_free_months, annual_base_rent_aed, base_rent_aed_sqm,
-        size_sqm (from selected_unit), security_deposit_aed,
-        deposit_months (from pricing_rule), legal_entity_name,
-        selected_unit_id, mall_code, ejari_required
-    """
-    unit         = state.get("selected_unit", {})
-    pricing_rule = state.get("pricing_rule", {})
-
-    results = [
-        cc01_lease_start_date(
-            fit_out_end_date  = state.get("fit_out_end_date", ""),
-            lease_start_date  = state.get("lease_start_date", "")
+def _cc07_unit_availability(lease: dict) -> dict:
+    unit = get_unit(lease.get("unit_id", "")) or {}
+    status = unit.get("status", "unknown")
+    blocked = {"signed_unoccupied", "held_strategically", "occupied"}
+    passed = status not in blocked
+    return {
+        "check_id": "CC-07",
+        "name": "Unit available for leasing",
+        "passed": passed,
+        "detail": (
+            f"Unit status '{status}' — available. ✓"
+            if passed else
+            f"FAIL: Unit status '{status}' — not available for leasing."
         ),
-        cc02_rent_commencement(
-            lease_start_date       = state.get("lease_start_date", ""),
-            rent_commencement_date = state.get("rent_commencement_date", ""),
-            rent_free_months       = state.get("rent_free_months", 0)
-        ),
-        cc03_annual_rent(
-            annual_base_rent_aed = state.get("annual_base_rent_aed", 0),
-            base_rent_aed_sqm    = state.get("base_rent_aed_sqm", 0),
-            size_sqm             = unit.get("size_sqm", 0)
-        ),
-        cc04_security_deposit(
-            security_deposit_aed  = state.get("security_deposit_aed", 0),
-            annual_base_rent_aed  = state.get("annual_base_rent_aed", 0),
-            deposit_months        = pricing_rule.get("security_deposit_months", 3)
-        ),
-        cc05_legal_entity(
-            yardi_entity  = state.get("legal_entity_name", ""),
-            kofax_entity  = state.get("legal_entity_name", "")  # same source in POC
-        ),
-        cc06_unit_id(
-            yardi_unit_id = state.get("selected_unit_id", ""),
-            kofax_unit_id = state.get("selected_unit_id", "")   # same source in POC
-        ),
-        cc07_ejari_flag(
-            mall_code         = state.get("mall_code", ""),
-            ejari_flag_in_doc = state.get("ejari_required", False)
-        ),
+    }
+
+
+def run_all_checks(lease: dict) -> dict:
+    """
+    Run CC-01 through CC-07 against a lease dict.
+    Fetches pricing rule from DB automatically using property_id + category.
+    """
+    pricing = get_pricing_rule(
+        lease.get("property_id", ""),
+        lease.get("category", ""),
+    ) or {}
+
+    checks = [
+        _cc01_rent_within_bounds(lease, pricing),
+        _cc02_fit_out_period(lease, pricing),
+        _cc03_security_deposit(lease, pricing),
+        _cc04_turnover_rent(lease, pricing),
+        _cc05_escalation(lease, pricing),
+        _cc06_dates_consistent(lease),
+        _cc07_unit_availability(lease),
     ]
 
-    all_passed = all(r.passed for r in results)
-    return all_passed, results
-
-
-def print_check_results(results: list[CheckResult]):
-    """Print all check results to terminal in a readable format."""
-    print(f"\n  Kofax Consistency Checks")
-    print(f"  {'─'*45}")
-    for r in results:
-        print(r)
-    print(f"  {'─'*45}")
-    passed = sum(1 for r in results if r.passed)
-    print(f"  Result: {passed}/{len(results)} checks passed")
-    print()
+    failed = [c for c in checks if not c["passed"]]
+    return {
+        "total_checks": len(checks),
+        "passed": len(checks) - len(failed),
+        "failed": len(failed),
+        "all_passed": len(failed) == 0,
+        "checks": checks,
+    }

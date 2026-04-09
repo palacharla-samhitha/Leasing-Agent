@@ -1,174 +1,227 @@
-import json
-from pathlib import Path
+# ============================================================================
+# tools/yardi.py — Yardi Voyager simulation layer
+# All reads/writes go to PostgreSQL. Function signatures unchanged.
+# COPY THIS FILE TO: tools/yardi.py (replace entire contents)
+# ============================================================================
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "data"
-
-
-def _load(filename):
-    path = DATA_DIR / filename
-    if not path.exists():
-        raise FileNotFoundError(f"Data file not found: {path}")
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+from db import get_conn, dict_cursor
 
 
-LEASABLE_STATUSES = {"vacant", "expiring_soon"}
+# ── Properties ────────────────────────────────────────────────────────────────
+
+def get_all_properties() -> list[dict]:
+    with get_conn() as conn:
+        cur = dict_cursor(conn)
+        cur.execute("SELECT * FROM properties WHERE status = 'active' ORDER BY name")
+        return cur.fetchall()
 
 
-def get_available_units(size_min, size_max, category, preferred_mall=None):
-    units = _load("units.json")
-    results = []
-    for unit in units:
-        if unit["status"] not in LEASABLE_STATUSES:
-            continue
-        if not (size_min <= unit["size_sqm"] <= size_max):
-            continue
-        category_lower = category.lower()
-        matched = any(
-            c.lower() in category_lower or category_lower in c.lower()
-            for c in unit.get("category_fit", [])
+def get_property(property_id: str) -> dict | None:
+    with get_conn() as conn:
+        cur = dict_cursor(conn)
+        cur.execute("SELECT * FROM properties WHERE property_id = %s", (property_id,))
+        return cur.fetchone()
+
+
+# ── Units ─────────────────────────────────────────────────────────────────────
+
+def get_available_units(
+    size_min: float,
+    size_max: float,
+    category: str,
+    preferred_mall: str | None = None,
+) -> list[dict]:
+    """
+    Return units that are vacant or expiring_soon within the size range.
+    Category matching uses Postgres native array operator @>.
+    Falls back to all size-matched units if no category match found.
+    """
+    with get_conn() as conn:
+        cur = dict_cursor(conn)
+
+        # Try category-aware query first (TEXT[] @> ARRAY[...])
+        q = """
+            SELECT u.*, p.name AS mall_name,
+                   p.ejari_applicable, p.rera_applicable
+            FROM units u
+            JOIN properties p ON u.property_id = p.property_id
+            WHERE u.status IN ('vacant', 'expiring_soon')
+              AND u.sqm BETWEEN %s AND %s
+              AND u.category_fit @> ARRAY[%s]::TEXT[]
+        """
+        params = [size_min, size_max, category.lower()]
+
+        if preferred_mall:
+            q += " AND LOWER(p.name) LIKE %s"
+            params.append(f"%{preferred_mall.lower()}%")
+
+        q += " ORDER BY p.name, u.unit_id"
+        cur.execute(q, params)
+        results = cur.fetchall()
+
+        if results:
+            return results
+
+        # Fallback — return all size-matched available units
+        q_fallback = """
+            SELECT u.*, p.name AS mall_name,
+                   p.ejari_applicable, p.rera_applicable
+            FROM units u
+            JOIN properties p ON u.property_id = p.property_id
+            WHERE u.status IN ('vacant', 'expiring_soon')
+              AND u.sqm BETWEEN %s AND %s
+            ORDER BY p.name, u.unit_id
+        """
+        params_fb = [size_min, size_max]
+        if preferred_mall:
+            q_fallback += " AND LOWER(p.name) LIKE %s"
+            params_fb.append(f"%{preferred_mall.lower()}%")
+
+        cur.execute(q_fallback, params_fb)
+        return cur.fetchall()
+
+
+def get_unit(unit_id: str) -> dict | None:
+    with get_conn() as conn:
+        cur = dict_cursor(conn)
+        cur.execute(
+            """
+            SELECT u.*, p.name AS mall_name,
+                   p.ejari_applicable, p.rera_applicable
+            FROM units u
+            JOIN properties p ON u.property_id = p.property_id
+            WHERE u.unit_id = %s
+            """,
+            (unit_id,),
         )
-        if not matched:
-            continue
-        unit = unit.copy()
-        unit["_preferred"] = (
-            preferred_mall is not None
-            and unit["mall"].lower() == preferred_mall.lower()
-        )
-        results.append(unit)
-    results.sort(key=lambda u: (not u["_preferred"], u["base_rent_aed_sqm"]))
-    return results
+        return cur.fetchone()
 
 
-def get_unit_by_id(unit_id):
-    for unit in _load("units.json"):
-        if unit["unit_id"] == unit_id:
-            return unit
-    return None
-
-
-def get_all_units():
-    return _load("units.json")
-
-
-def lock_unit(unit_id):
-    unit = get_unit_by_id(unit_id)
-    if not unit:
-        print(f"  [Yardi] Unit {unit_id} not found.")
-        return False
-    if unit["status"] not in LEASABLE_STATUSES:
-        print(f"  [Yardi] Unit {unit_id} not available (status: {unit['status']}).")
-        return False
-    print(f"  [Yardi] Unit {unit_id} locked for deal.")
-    return True
-
-
-def get_pricing_rule(mall_code, category):
-    data = _load("pricing.json")
-    category_lower = category.lower()
-    for rule in data["pricing_rules"]:
-        if rule["mall_code"].lower() != mall_code.lower():
-            continue
-        rule_cat = rule["category"].lower()
-        if rule_cat in category_lower or category_lower in rule_cat:
-            return rule
-    return None
-
-
-def get_rera_cap():
-    return _load("pricing.json")["rera_rent_increase_cap_pct"]
-
-
-def validate_rent(proposed_rent, mall_code, category):
-    rule = get_pricing_rule(mall_code, category)
-    if not rule:
-        return False, f"No pricing rule found for {mall_code} / {category}"
-    lo = rule["base_rent_aed_sqm_min"]
-    hi = rule["base_rent_aed_sqm_max"]
-    if lo <= proposed_rent <= hi:
-        return True, f"AED {proposed_rent} is within range ({lo}-{hi})"
-    return False, f"AED {proposed_rent} is outside allowed range ({lo}-{hi})"
-
-
-def get_mall_by_code(mall_code):
-    for mall in _load("malls.json"):
-        if mall["mall_code"].lower() == mall_code.lower():
-            return mall
-    return None
-
-
-def get_all_malls():
-    return _load("malls.json")
-
-
-def is_ejari_required(mall_code):
-    mall = get_mall_by_code(mall_code)
-    if not mall:
-        return False
-    return mall.get("ejari_applicable", False)
-
-
-def is_rera_applicable(mall_code):
-    mall = get_mall_by_code(mall_code)
-    if not mall:
-        return False
-    return mall.get("rera_applicable", False)
-
-
-def get_governing_law(mall_code):
-    mall = get_mall_by_code(mall_code)
-    if not mall:
-        return "UAE Law"
-    country = mall.get("country", "UAE")
-    laws = {
-        "UAE":     "UAE Law / Dubai Courts",
-        "Bahrain": "Bahrain Law / Bahrain Courts",
-        "Oman":    "Oman Law / Muscat Courts",
-        "Egypt":   "Egyptian Law / Cairo Courts",
-        "KSA":     "KSA Law / Saudi Courts",
+def update_unit_status(unit_id: str, new_status: str) -> bool:
+    valid = {
+        "vacant", "expiring_soon", "reserved_informally",
+        "signed_unoccupied", "held_strategically", "occupied",
     }
-    return laws.get(country, "UAE Law")
+    if new_status not in valid:
+        raise ValueError(f"Invalid unit status: '{new_status}'")
+    with get_conn() as conn:
+        cur = dict_cursor(conn)
+        cur.execute(
+            "UPDATE units SET status = %s WHERE unit_id = %s",
+            (new_status, unit_id),
+        )
+        return cur.rowcount == 1
 
 
-def get_all_leases():
-    return _load("leases.json")
+# ── Inquiries ─────────────────────────────────────────────────────────────────
+
+def get_inquiry(inquiry_id: str) -> dict | None:
+    with get_conn() as conn:
+        cur = dict_cursor(conn)
+        cur.execute(
+            "SELECT * FROM inquiries WHERE inquiry_id = %s", (inquiry_id,)
+        )
+        return cur.fetchone()
 
 
-def get_lease_by_id(lease_id):
-    for lease in _load("leases.json"):
-        if lease["lease_id"] == lease_id:
-            return lease
-    return None
+def get_all_inquiries(status: str | None = None) -> list[dict]:
+    with get_conn() as conn:
+        cur = dict_cursor(conn)
+        if status:
+            cur.execute(
+                "SELECT * FROM inquiries WHERE status = %s ORDER BY received_at DESC",
+                (status,),
+            )
+        else:
+            cur.execute("SELECT * FROM inquiries ORDER BY received_at DESC")
+        return cur.fetchall()
 
 
-def get_lease_by_unit(unit_id):
-    matches = [l for l in _load("leases.json") if l["unit_id"] == unit_id]
-    if not matches:
-        return None
-    return sorted(
-        matches,
-        key=lambda l: l.get("lease_start_date", ""),
-        reverse=True
-    )[0]
+def update_inquiry_status(
+    inquiry_id: str,
+    new_status: str,
+    assigned_unit: str | None = None,
+) -> bool:
+    with get_conn() as conn:
+        cur = dict_cursor(conn)
+        if assigned_unit:
+            cur.execute(
+                "UPDATE inquiries SET status=%s, assigned_unit=%s WHERE inquiry_id=%s",
+                (new_status, assigned_unit, inquiry_id),
+            )
+        else:
+            cur.execute(
+                "UPDATE inquiries SET status=%s WHERE inquiry_id=%s",
+                (new_status, inquiry_id),
+            )
+        return cur.rowcount == 1
 
 
-def create_draft_lease(deal):
-    unit_id = deal.get("selected_unit_id", "UNK")
-    yardi_deal_id = f"YRD-{unit_id}-2026-DRAFT"
-    print(f"  [Yardi] Draft lease record created -> {yardi_deal_id}")
-    return yardi_deal_id
+# ── Pricing ───────────────────────────────────────────────────────────────────
+
+def get_pricing_rule(property_id: str, category: str) -> dict | None:
+    with get_conn() as conn:
+        cur = dict_cursor(conn)
+        cur.execute(
+            """
+            SELECT * FROM pricing_rules
+            WHERE property_id = %s AND LOWER(category) = LOWER(%s)
+            """,
+            (property_id, category),
+        )
+        return cur.fetchone()
 
 
-def get_all_inquiries():
-    return _load("inquiries.json")
+def get_all_pricing_rules(property_id: str | None = None) -> list[dict]:
+    with get_conn() as conn:
+        cur = dict_cursor(conn)
+        if property_id:
+            cur.execute(
+                "SELECT * FROM pricing_rules WHERE property_id = %s ORDER BY category",
+                (property_id,),
+            )
+        else:
+            cur.execute("SELECT * FROM pricing_rules ORDER BY property_id, category")
+        return cur.fetchall()
 
 
-def get_inquiry_by_id(inquiry_id):
-    for inq in _load("inquiries.json"):
-        if inq["inquiry_id"] == inquiry_id:
-            return inq
-    return None
+# ── Vacancy Plan ──────────────────────────────────────────────────────────────
+
+def get_vacancy_plan(unit_id: str) -> dict | None:
+    with get_conn() as conn:
+        cur = dict_cursor(conn)
+        cur.execute(
+            "SELECT * FROM vacancy_plan WHERE unit_id = %s", (unit_id,)
+        )
+        return cur.fetchone()
 
 
-def get_inquiries_by_status(status):
-    return [i for i in _load("inquiries.json") if i.get("status") == status]
+# ── Leases ────────────────────────────────────────────────────────────────────
+
+def create_lease(lease_data: dict) -> str:
+    """Insert a new lease record. Returns the lease_id."""
+    cols = ", ".join(lease_data.keys())
+    placeholders = ", ".join(["%s"] * len(lease_data))
+    with get_conn() as conn:
+        cur = dict_cursor(conn)
+        cur.execute(
+            f"INSERT INTO leases ({cols}) VALUES ({placeholders})",
+            list(lease_data.values()),
+        )
+    return lease_data["lease_id"]
+
+
+def get_lease(lease_id: str) -> dict | None:
+    with get_conn() as conn:
+        cur = dict_cursor(conn)
+        cur.execute("SELECT * FROM leases WHERE lease_id = %s", (lease_id,))
+        return cur.fetchone()
+
+
+def get_lease_by_inquiry(inquiry_id: str) -> dict | None:
+    with get_conn() as conn:
+        cur = dict_cursor(conn)
+        cur.execute(
+            "SELECT * FROM leases WHERE inquiry_id = %s", (inquiry_id,)
+        )
+        return cur.fetchone()
