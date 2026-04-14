@@ -1,14 +1,23 @@
-# tools/scoring.py
-# Lead scoring, vacancy demand scoring, and match scoring
-# Simulates the traditional AI models that run on Databricks in production
+# ============================================================================
+# tools/scoring.py — Lead, vacancy demand, and match scoring
+# Writes results to lead_scores table.
+# Function signatures match what nodes.py expects.
+# ============================================================================
 
 from datetime import datetime, timezone
+from db import get_conn, dict_cursor
 
+
+# ── Lead Score ────────────────────────────────────────────────────────────────
 
 def calculate_lead_score(inquiry: dict) -> dict:
+    """
+    Score a tenant inquiry 0.0–1.0. Grade A / B / C.
+    Matches original scoring logic from dev1.
+    Also upserts result to lead_scores table.
+    """
     score = 0.0
-    pos = []
-    neg = []
+    pos, neg = [], []
 
     # Established brand vs new entrant
     if not inquiry.get("first_uae_store", True):
@@ -18,7 +27,7 @@ def calculate_lead_score(inquiry: dict) -> dict:
         score += 0.10
         pos.append("New market entrant — parent guarantee expected")
 
-    # Financial profile (inferred from risk flags and brand signals)
+    # Risk flags
     risk = inquiry.get("risk_flag")
     if risk in (None, ""):
         score += 0.20
@@ -44,7 +53,7 @@ def calculate_lead_score(inquiry: dict) -> dict:
     else:
         neg.append(f"Inquiry via {ch} — unqualified channel, may need vetting")
 
-    # Risk flags penalty (only for non-entrant risks like expired docs)
+    # Risk flag penalty
     if risk and risk not in (None, "", "new_market_entrant"):
         score -= 0.10
 
@@ -58,25 +67,72 @@ def calculate_lead_score(inquiry: dict) -> dict:
         neg.append(f"Target opening {target} — only {months_out} months out, tight timeline")
 
     score = round(max(0.0, min(1.0, score)), 2)
+    grade = "A" if score >= 0.75 else ("B" if score >= 0.55 else "C")
 
-    if score >= 0.75:
-        grade = "A"
-    elif score >= 0.55:
-        grade = "B"
-    else:
-        grade = "C"
-
-    return {
+    result = {
+        "inquiry_id": inquiry.get("inquiry_id"),
         "lead_score": score,
         "lead_grade": grade,
         "signals_positive": pos,
         "signals_negative": neg,
-        "reasoning": _build_lead_reasoning(inquiry, score, grade, pos, neg)
+        "reasoning": _build_lead_reasoning(inquiry, score, grade, pos, neg),
     }
 
+    # Write to DB if inquiry_id present
+    if result["inquiry_id"]:
+        _upsert_lead_score(result)
+
+    return result
+
+
+def _upsert_lead_score(result: dict) -> None:
+    with get_conn() as conn:
+        cur = dict_cursor(conn)
+        cur.execute(
+            """
+            INSERT INTO lead_scores
+              (inquiry_id, lead_score, lead_grade,
+               signals_positive, signals_negative, reasoning, scored_at)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (inquiry_id) DO UPDATE SET
+              lead_score       = EXCLUDED.lead_score,
+              lead_grade       = EXCLUDED.lead_grade,
+              signals_positive = EXCLUDED.signals_positive,
+              signals_negative = EXCLUDED.signals_negative,
+              reasoning        = EXCLUDED.reasoning,
+              scored_at        = NOW()
+            """,
+            (
+                result["inquiry_id"],
+                result["lead_score"],
+                result["lead_grade"],
+                result["signals_positive"],
+                result["signals_negative"],
+                result["reasoning"],
+            ),
+        )
+
+
+def get_lead_score(inquiry_id: str) -> dict | None:
+    with get_conn() as conn:
+        cur = dict_cursor(conn)
+        cur.execute(
+            "SELECT * FROM lead_scores WHERE inquiry_id = %s", (inquiry_id,)
+        )
+        return cur.fetchone()
+
+
+# ── Vacancy Demand Score ──────────────────────────────────────────────────────
 
 def calculate_vacancy_demand_score(unit: dict, inquiry: dict) -> dict:
-    vp = unit.get("vacancy_plan", {})
+    """
+    Score a unit's demand urgency 0.0–1.0.
+    Reads vacancy_plan from DB using unit_id.
+    Falls back gracefully if no vacancy_plan exists.
+    """
+    from tools.yardi import get_vacancy_plan
+    vp = get_vacancy_plan(unit.get("unit_id", "")) or {}
+
     score = 0.0
 
     # Footfall tier
@@ -101,7 +157,7 @@ def calculate_vacancy_demand_score(unit: dict, inquiry: dict) -> dict:
         score += 0.25
 
     # Vacancy duration
-    vac_days = vp.get("vacancy_days", 0)
+    vac_days = vp.get("vacancy_days", 0) or 0
     if vac_days > 60:
         score += 0.20
     elif vac_days > 30:
@@ -115,11 +171,17 @@ def calculate_vacancy_demand_score(unit: dict, inquiry: dict) -> dict:
         "category_match": cat_match,
         "vacancy_days": vac_days,
         "priority_unit": priority,
-        "footfall_tier": tier
+        "footfall_tier": tier,
     }
 
 
+# ── Match Score ───────────────────────────────────────────────────────────────
+
 def calculate_match_score(inquiry: dict, unit: dict) -> dict:
+    """
+    Combined score = 40% lead quality + 60% vacancy demand.
+    Returns full scoring dict that nodes.py reads for _scoring key.
+    """
     lead = calculate_lead_score(inquiry)
     demand = calculate_vacancy_demand_score(unit, inquiry)
 
@@ -133,7 +195,10 @@ def calculate_match_score(inquiry: dict, unit: dict) -> dict:
         warning = f"Moderate match ({match}) — executive judgment recommended at Gate 1"
     else:
         status = "weak"
-        warning = f"Weak match ({match}) — exec must justify proceeding. Lead grade: {lead['lead_grade']}, demand score: {demand['vacancy_demand_score']}"
+        warning = (
+            f"Weak match ({match}) — exec must justify proceeding. "
+            f"Lead grade: {lead['lead_grade']}, demand score: {demand['vacancy_demand_score']}"
+        )
 
     return {
         "match_score": match,
@@ -147,7 +212,7 @@ def calculate_match_score(inquiry: dict, unit: dict) -> dict:
         "footfall_tier": demand["footfall_tier"],
         "match_warning": warning,
         "lead_signals_positive": lead["signals_positive"],
-        "lead_signals_negative": lead["signals_negative"]
+        "lead_signals_negative": lead["signals_negative"],
     }
 
 
@@ -172,16 +237,12 @@ def _estimate_months_to_opening(target: str) -> int | None:
 def _check_category_match(inquiry_cat: str, demand_cat: str) -> bool:
     if not demand_cat or not inquiry_cat:
         return False
-
     inq_words = set(inquiry_cat.replace("&", " ").replace(",", " ").lower().split())
     dem_words = set(demand_cat.replace("&", " ").replace(",", " ").lower().split())
-
     stop = {"and", "the", "a", "of", "for", "in", "to", "or"}
     inq_words -= stop
     dem_words -= stop
-
-    overlap = inq_words & dem_words
-    return len(overlap) >= 1
+    return len(inq_words & dem_words) >= 1
 
 
 def _build_lead_reasoning(inq: dict, score: float, grade: str, pos: list, neg: list) -> str:

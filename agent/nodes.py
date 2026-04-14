@@ -1,584 +1,466 @@
 # agent/nodes.py
 # All agent nodes for the leasing workflow
-# Integrated with real tool functions from tools/
 
 import json
 import os
-from datetime import datetime
+import time
+from decimal import Decimal
+from datetime import date, datetime
 from dateutil.relativedelta import relativedelta
 from dotenv import load_dotenv
 from groq import Groq
 
 from agent.prompts import PROMPTS
 from agent.state import LeasingAgentState
-
-# ── Real tool imports ─────────────────────────────────────────────────────────
 from tools.yardi import (
-    get_available_units,
-    get_all_units,
-    get_pricing_rule,
-    get_unit_by_id,
-    is_ejari_required,
+    get_available_units, get_all_units, get_pricing_rule,
+    get_unit_by_id, is_ejari_required,
 )
 from tools.documents import (
-    get_verification_scenario,
-    get_required_documents,
-    determine_tenant_type,
-    verify_documents,
+    get_verification_scenario, get_required_documents,
+    determine_tenant_type, verify_documents,
 )
 from tools.verification import run_all_checks
 from tools.ejari import file_ejari, generate_ejari_reference
 from tools.scoring import calculate_lead_score, calculate_match_score
 
 load_dotenv()
-
-# ── Groq client ───────────────────────────────────────────────────────────────
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-MODEL  = "llama-3.1-8b-instant"
+MODEL = "llama-3.1-8b-instant"
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── JSON serializer — handles Postgres Decimal and date types ─────────────────
 
-def call_gemini(node_name: str, context: dict) -> dict:
-    """
-    Calls Groq/Llama with the node's system prompt and context.
-    Named call_gemini to avoid renaming every call site.
-    Returns parsed JSON with 'reasoning' and 'output' keys.
-    Retries once with stricter instruction if JSON parsing fails.
-    """
-    user_message = f"Here is the data for this step:\n\n{json.dumps(context, indent=2)}"
+def _decimal_default(obj):
+    if isinstance(obj, Decimal):
+        return float(obj)
+    if isinstance(obj, (date, datetime)):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
-    for attempt in range(2):
-        msg = user_message
-        if attempt == 1:
-            msg += "\n\nIMPORTANT: Your response must be valid JSON only. No markdown, no backticks, no preamble."
 
-        response = client.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": PROMPTS[node_name]},
-                {"role": "user",   "content": msg}
-            ],
-            temperature=0.3,
-            max_tokens=2000,
-        )
-        raw = response.choices[0].message.content.strip()
+# ── LLM caller ────────────────────────────────────────────────────────────────
+
+def _call_llm(node_name: str, context: dict) -> dict:
+    """Calls Groq with node prompt and context. Retries on rate limit or bad JSON."""
+    prompt = PROMPTS[node_name]
+    msg = f"Here is the data for this step:\n\n{json.dumps(context, indent=2, default=_decimal_default)}"
+
+    for attempt in range(3):
+        if attempt == 2:
+            msg += "\nIMPORTANT: Respond with valid JSON only. No markdown."
+        try:
+            raw = client.chat.completions.create(
+                model=MODEL, temperature=0.3, max_tokens=2000,
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user",   "content": msg},
+                ]
+            ).choices[0].message.content.strip()
+        except Exception as e:
+            if attempt < 2 and ("429" in str(e) or "rate_limit" in str(e).lower()):
+                time.sleep(15)
+                continue
+            return {"reasoning": f"LLM error: {e}", "output": {}, "error": str(e)}
 
         if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-            raw = raw.strip()
-
+            raw = raw.split("```")[1].removeprefix("json").strip()
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
-            if attempt == 1:
-                return {
-                    "reasoning": "Failed to parse Groq response after retry.",
-                    "output": {},
-                    "error": raw
-                }
+            if attempt == 2:
+                return {"reasoning": "JSON parse failed", "output": {}, "error": raw}
+            time.sleep(2)
 
     return {"reasoning": "", "output": {}}
 
 
-def log_step(state: LeasingAgentState, step: str, reasoning: str, output: dict) -> None:
-    """Appends a reasoning log entry for this step."""
-    state["reasoning_log"].append({
-        "step": step,
-        "reasoning": reasoning,
-        "output": output,
-        "timestamp": datetime.now().isoformat()
-    })
+# ── Node runner wrapper ───────────────────────────────────────────────────────
 
-
-# ── Node 1 — Intake ───────────────────────────────────────────────────────────
-
-def node_intake(state: LeasingAgentState) -> LeasingAgentState:
-    """
-    Classifies the inquiry, extracts key requirements, and runs lead scoring.
-    Stage 1 (Vacancy ID) + Stage 2 (Tenant Qualification) combined.
-    Reads: inquiry
-    Writes: classification, lead_score_result, current_step, reasoning_log
-    """
-    state["current_step"] = "node_intake"
-
-    inquiry = state["inquiry"]
-
-    # ── Run lead scoring (Stage 2 — Tenant Qualification) ─────────────────
-    lead_result = calculate_lead_score(inquiry)
-    state["lead_score_result"] = lead_result
-
-    # ── Pass lead score to LLM for classification context ─────────────────
-    context = {
-        "inquiry": inquiry,
-        "lead_score": lead_result
-    }
-
-    result = call_gemini("node_intake", context)
-
+def _run_node(state, step_name, next_step, context, post_fn=None):
+    state["current_step"] = step_name
+    result   = _call_llm(step_name, context)
     reasoning = result.get("reasoning", "")
-    output = result.get("output", {})
+    output    = result.get("output", {})
 
     if "error" in result:
-        state["errors"].append(f"node_intake: {result['error']}")
+        state["errors"].append(f"{step_name}: {result['error']}")
 
-    state["classification"] = output
-    log_step(state, "node_intake", reasoning, {
-        **output,
-        "lead_score_result": lead_result
+    if post_fn:
+        post_fn(state, output, result)
+
+    state["reasoning_log"].append({
+        "step": step_name, "reasoning": reasoning,
+        "output": output, "timestamp": datetime.now().isoformat()
     })
-    state["current_step"] = "node_unit_match"
-
+    state["current_step"] = next_step
     return state
 
 
-# ── Node 2 — Unit Match ───────────────────────────────────────────────────────
+# ── Slim helpers — reduce token usage ────────────────────────────────────────
+
+def _slim_inquiry(inquiry: dict, fields=None) -> dict:
+    default = ["brand_name", "legal_entity_name", "category", "preferred_mall",
+               "preferred_zone", "size_min_sqm", "size_max_sqm", "target_opening",
+               "first_uae_store", "priority", "risk_flag", "channel"]
+    return {k: inquiry.get(k) for k in (fields or default)}
+
+
+def _slim_unit(unit: dict) -> dict:
+    """Extract only the fields the LLM needs — uses schema field names."""
+    return {k: unit.get(k) for k in [
+        "unit_id", "mall_name", "floor", "zone", "sqm", "status",
+        "base_rent_sqm", "service_charge_sqm", "marketing_levy_sqm",
+        "turnover_rent_pct", "typical_fit_out_months", "category_fit", "_scoring",
+    ] if unit.get(k) is not None}
+
+
+# ── Node 1 — Intake & Lead Scoring ───────────────────────────────────────────
+
+def node_intake(state: LeasingAgentState) -> LeasingAgentState:
+    inquiry = state["inquiry"]
+    lead    = calculate_lead_score(inquiry)
+    state["lead_score_result"] = lead
+
+    context = {
+        "inquiry":    _slim_inquiry(inquiry),
+        "lead_score": {"lead_score": lead["lead_score"], "lead_grade": lead["lead_grade"]},
+    }
+
+    def post(s, output, _result):
+        s["classification"] = output
+
+    return _run_node(state, "node_intake", "node_unit_match", context, post)
+
+
+# ── Node 2 — Unit Match & Scoring ────────────────────────────────────────────
 
 def node_unit_match(state: LeasingAgentState) -> LeasingAgentState:
-    """
-    Searches available units, scores each with calculate_match_score(),
-    then passes pre-scored units to LLM for ranking and explanation.
-    Reads: inquiry, classification, lead_score_result
-    Writes: matched_units, weak_match_warning, current_step, reasoning_log
-    """
     state["current_step"] = "node_unit_match"
-
     inquiry = state["inquiry"]
-    classification = state["classification"] or {}
 
-    # ── Get available units from Yardi ────────────────────────────────────
-    # Always use inquiry's original category — LLM reclassification may not
-    # match category_fit strings in units.json
+    # Fetch available units
     available = get_available_units(
         size_min=inquiry.get("size_min_sqm", 0),
         size_max=inquiry.get("size_max_sqm", 9999),
         category=inquiry.get("category", ""),
-        preferred_mall=inquiry.get("preferred_mall")
+        preferred_mall=inquiry.get("preferred_mall"),
     )
-
-    # If strict filters return nothing, get ALL leasable units so the exec
-    # can see what's available and make a judgment call at Gate 1
     if not available:
-        all_units = get_all_units()
-        available = [u.copy() for u in all_units if u["status"] in ("vacant", "expiring_soon")]
-        for u in available:
-            u["_preferred"] = False
+        available = [u.copy() for u in get_all_units()
+                     if u["status"] in ("vacant", "expiring_soon")]
 
-    # Fallback: if strict match returns nothing, relax filters progressively
-    if not available:
-        # Try without category filter
-        available = get_available_units(
-            size_min=inquiry.get("size_min_sqm", 0),
-            size_max=inquiry.get("size_max_sqm", 9999),
-            category="",
-            preferred_mall=inquiry.get("preferred_mall")
-        )
-    if not available:
-        # Try without mall preference and category
-        available = get_available_units(
-            size_min=inquiry.get("size_min_sqm", 0),
-            size_max=inquiry.get("size_max_sqm", 9999),
-            category="",
-            preferred_mall=None
-        )
-
-    # ── Score every unit before passing to LLM ────────────────────────────
-    scored_units = []
+    # Score and rank — top 3 only to stay within token limits
     for unit in available:
-        score_result = calculate_match_score(inquiry, unit)
-        unit["_scoring"] = score_result
-        scored_units.append(unit)
+        unit["_scoring"] = calculate_match_score(inquiry, unit)
+    available.sort(key=lambda u: u["_scoring"]["match_score"], reverse=True)
+    scored = available[:3]
 
-    # Sort by match_score descending
-    scored_units.sort(key=lambda u: u["_scoring"]["match_score"], reverse=True)
-
-    # ── Check for weak match warning ──────────────────────────────────────
-    if scored_units:
-        top_score = scored_units[0]["_scoring"]["match_score"]
-        if top_score < 0.50:
-            state["weak_match_warning"] = (
-                f"Best available match scores only {top_score} — "
-                f"no strong fit found for this inquiry. "
-                f"Executive judgment required at Gate 1."
-            )
-        else:
-            state["weak_match_warning"] = None
+    # Weak match warning
+    if scored:
+        top = scored[0]["_scoring"]["match_score"]
+        state["weak_match_warning"] = (
+            f"Best match scores only {top} — no strong fit. Executive judgment required."
+            if top < 0.50 else None
+        )
     else:
         state["weak_match_warning"] = "No available units found matching criteria."
 
-    # ── Pass scored units to LLM for ranking explanation ──────────────────
-    # Send slim unit data to stay within token limits
-    slim_units = []
-    for u in scored_units:
-        slim_units.append({
-            "unit_id": u.get("unit_id"),
-            "mall": u.get("mall"),
-            "floor": u.get("floor"),
-            "zone": u.get("zone"),
-            "size_sqm": u.get("size_sqm"),
-            "status": u.get("status"),
-            "base_rent_aed_sqm": u.get("base_rent_aed_sqm"),
-            "category_fit": u.get("category_fit"),
-            "_scoring": u.get("_scoring"),
-        })
-
     context = {
-        "inquiry": {
-            "brand_name": inquiry.get("brand_name"),
-            "category": inquiry.get("category"),
-            "preferred_mall": inquiry.get("preferred_mall"),
-            "size_min_sqm": inquiry.get("size_min_sqm"),
-            "size_max_sqm": inquiry.get("size_max_sqm"),
-        },
-        "classification": classification,
-        "lead_score": state.get("lead_score_result", {}),
-        "available_units": slim_units
+        "inquiry": _slim_inquiry(inquiry, ["brand_name", "category", "preferred_mall",
+                                            "size_min_sqm", "size_max_sqm"]),
+        "lead_score":      state.get("lead_score_result", {}),
+        "available_units": [_slim_unit(u) for u in scored],
     }
-
-    result = call_gemini("node_unit_match", context)
-
+    result    = _call_llm("node_unit_match", context)
     reasoning = result.get("reasoning", "")
-    output = result.get("output", {})
+    output    = result.get("output", {})
 
     if "error" in result:
         state["errors"].append(f"node_unit_match: {result['error']}")
 
-    # ── Build matched_units with scoring data preserved ───────────────────
-    llm_ranked = output.get("recommended_units", [])
+    # Merge LLM ranking with full DB data from scored list
+    llm_units = output.get("recommended_units", [])
+    final = []
+    for lu in llm_units:
+        src = next((u for u in scored if u.get("unit_id") == lu.get("unit_id")), None)
+        if src:
+            # Overwrite LLM values with authoritative DB values
+            lu.update({k: src[k] for k in [
+                "sqm", "base_rent_sqm", "mall_name", "zone",
+                "floor", "status", "category_fit", "_scoring"
+            ] if k in src})
+        final.append(lu)
 
-    # Merge LLM output with our pre-calculated scores
-    final_units = []
-    for llm_unit in llm_ranked:
-        uid = llm_unit.get("unit_id", "")
-        # Find the scored unit to attach _scoring
-        scored = next((u for u in scored_units if u.get("unit_id") == uid), None)
-        if scored:
-            llm_unit["_scoring"] = scored["_scoring"]
-        final_units.append(llm_unit)
+    # Fallback if LLM returned nothing or wrong unit IDs
+    if not final:
+        final = [{
+            "unit_id":       u["unit_id"],
+            "mall_name":     u.get("mall_name"),
+            "zone":          u.get("zone"),
+            "sqm":           u.get("sqm"),
+            "base_rent_sqm": u.get("base_rent_sqm"),
+            "_scoring":      u["_scoring"],
+        } for u in scored]
 
-    # If LLM didn't return units, fall back to tool-scored list
-    if not final_units and scored_units:
-        for u in scored_units[:3]:
-            final_units.append({
-                "unit_id": u["unit_id"],
-                "mall": u.get("mall", ""),
-                "zone": u.get("zone", ""),
-                "size_sqm": u.get("size_sqm", 0),
-                "base_rent_aed_sqm": u.get("base_rent_aed_sqm", 0),
-                "match_rationale": u["_scoring"].get("demand_signal", ""),
-                "_scoring": u["_scoring"]
-            })
+    # Single assignment — no duplicate
+    state["matched_units"] = final
 
-    state["matched_units"] = final_units
-    log_step(state, "node_unit_match", reasoning, {
-        **output,
-        "units_scored": len(scored_units),
-        "weak_match_warning": state.get("weak_match_warning")
+    state["reasoning_log"].append({
+        "step": "node_unit_match", "reasoning": reasoning,
+        "output": {**output, "units_scored": len(scored),
+                   "weak_match_warning": state.get("weak_match_warning")},
+        "timestamp": datetime.now().isoformat()
     })
     state["current_step"] = "node_hot_draft"
-
     return state
 
 
-# ── Node 3 — HoT Draft ────────────────────────────────────────────────────────
+# ── Node 3 — HoT Draft ───────────────────────────────────────────────────────
 
 def node_hot_draft(state: LeasingAgentState) -> LeasingAgentState:
-    """
-    Drafts the Heads of Terms for the top matched unit.
-    Uses get_pricing_rule() from tools/yardi.py for pricing parameters.
-    Reads: inquiry, matched_units, classification
-    Writes: hot_draft, current_step, reasoning_log
-    """
-    state["current_step"] = "node_hot_draft"
-
     inquiry = state["inquiry"]
-    classification = state["classification"] or {}
 
-    # Use pre-assigned unit if available, otherwise top match
-    assigned_unit_id = inquiry.get("assigned_unit")
-    top_unit = None
-
-    if assigned_unit_id:
-        top_unit = get_unit_by_id(assigned_unit_id)
-
+    # Resolve unit — use assigned_unit from inquiry first, then top match
+    uid      = inquiry.get("assigned_unit")
+    top_unit = get_unit_by_id(uid) if uid else None
     if not top_unit and state["matched_units"]:
-        top_uid = state["matched_units"][0].get("unit_id")
-        top_unit = get_unit_by_id(top_uid) if top_uid else None
-
+        uid      = state["matched_units"][0].get("unit_id")
+        top_unit = get_unit_by_id(uid) if uid else None
     if not top_unit:
         state["errors"].append("node_hot_draft: No matched unit available for HoT drafting")
         return state
 
-    # Get real pricing rule
-    mall_code = top_unit.get("mall_code", "")
-    category = classification.get("category", inquiry.get("category", ""))
-    pricing = get_pricing_rule(mall_code, category) or {}
-
-    lease_start = datetime.now() + relativedelta(months=1)
-    lease_start_str = lease_start.strftime("%Y-%m-%d")
+    pricing     = get_pricing_rule(top_unit.get("mall_code", ""), inquiry.get("category", "")) or {}
+    lease_start = (datetime.now() + relativedelta(months=1)).strftime("%Y-%m-%d")
 
     context = {
-        "inquiry": inquiry,
-        "selected_unit": top_unit,
+        "inquiry": _slim_inquiry(inquiry, ["brand_name", "legal_entity_name",
+                                            "category", "first_uae_store", "target_opening"]),
+        "selected_unit":     _slim_unit(top_unit),
         "pricing_parameters": pricing,
-        "lease_start_date": lease_start_str,
-        "classification": classification
+        "lease_start_date":  lease_start,
     }
 
-    result = call_gemini("node_hot_draft", context)
+    def post(s, output, _result):
+        # Always ensure lease_start_date is in the HoT draft
+        if "lease_start_date" not in output:
+            output["lease_start_date"] = lease_start
+        s["hot_draft"] = output
 
-    reasoning = result.get("reasoning", "")
-    output = result.get("output", {})
-
-    if "error" in result:
-        state["errors"].append(f"node_hot_draft: {result['error']}")
-
-    state["hot_draft"] = output
-    log_step(state, "node_hot_draft", reasoning, output)
-    state["current_step"] = "gate_1"
-
-    return state
+    return _run_node(state, "node_hot_draft", "gate_1", context, post)
 
 
 # ── Node 4 — Document Request ─────────────────────────────────────────────────
 
 def node_doc_request(state: LeasingAgentState) -> LeasingAgentState:
-    """
-    Generates document checklist and tenant message.
-    Uses determine_tenant_type() and get_required_documents() from tools/documents.py
-    Reads: inquiry, selected_unit, hot_approved, classification
-    Writes: document_checklist, tenant_message, current_step, reasoning_log
-    """
-    state["current_step"] = "node_doc_request"
-
-    inquiry = state["inquiry"]
-
-    # Use real tool to determine tenant type and required docs
-    tenant_type = determine_tenant_type(inquiry)
+    inquiry       = state["inquiry"]
+    tenant_type   = determine_tenant_type(inquiry)
     required_docs = get_required_documents(tenant_type)
 
     context = {
-        "inquiry": inquiry,
-        "selected_unit": state["selected_unit"],
-        "hot_approved": state["hot_approved"],
-        "classification": state["classification"],
-        "tenant_type": tenant_type,
-        "required_documents": required_docs
+        "inquiry": _slim_inquiry(inquiry, ["brand_name", "legal_entity_name",
+                                            "contact_name", "first_uae_store", "category"]),
+        "tenant_type":       tenant_type,
+        "required_documents": required_docs,
     }
 
-    result = call_gemini("node_doc_request", context)
+    def post(s, output, _result):
+        s["document_checklist"] = required_docs
+        s["tenant_message"]     = output.get("tenant_message", "")
 
-    reasoning = result.get("reasoning", "")
-    output = result.get("output", {})
-
-    if "error" in result:
-        state["errors"].append(f"node_doc_request: {result['error']}")
-
-    state["document_checklist"] = required_docs
-    state["tenant_message"] = output.get("tenant_message", "")
-    log_step(state, "node_doc_request", reasoning, {
-        **output,
-        "document_checklist": required_docs,
-        "tenant_type": tenant_type
-    })
-    state["current_step"] = "node_doc_verify"
-
-    return state
+    return _run_node(state, "node_doc_request", "node_doc_verify", context, post)
 
 
 # ── Node 4b — Document Verification ──────────────────────────────────────────
 
 def node_doc_verify(state: LeasingAgentState) -> LeasingAgentState:
-    """
-    Verifies submitted documents using verify_documents() from tools/documents.py.
-    Reads: document_checklist, inquiry_id
-    Writes: documents_received, document_issues, current_step, reasoning_log
-    """
-    state["current_step"] = "node_doc_verify"
-
-    inquiry_id = state["inquiry_id"]
-
-    verification_result = verify_documents(inquiry_id)
-    scenario = get_verification_scenario(inquiry_id) or {}
-    state["documents_received"] = scenario
+    verification = verify_documents(state["inquiry_id"])
+    state["documents_received"] = get_verification_scenario(state["inquiry_id"]) or {}
 
     context = {
-        "document_checklist": state["document_checklist"],
-        "verification_result": verification_result,
-        "inquiry": state["inquiry"]
+        "document_checklist":  state["document_checklist"],
+        "verification_result": verification,
+        "brand_name":          state["inquiry"].get("brand_name"),
     }
 
-    result = call_gemini("node_doc_verify", context)
+    def post(s, output, _result):
+        issues = []
+        for doc in verification.get("expired", []):
+            issues.append(f"{doc['doc_type']}: EXPIRED — {doc.get('expiry_date', '')}")
+        for name in verification.get("missing", []):
+            issues.append(f"{name}: MISSING")
+        s["document_issues"] = issues
 
-    reasoning = result.get("reasoning", "")
-    output = result.get("output", {})
-
-    if "error" in result:
-        state["errors"].append(f"node_doc_verify: {result['error']}")
-
-    issues = []
-    for doc in verification_result.get("expired", []):
-        issues.append(f"{doc['doc_type']}: EXPIRED — {doc.get('expiry_date', '')}")
-    for doc_name in verification_result.get("missing", []):
-        issues.append(f"{doc_name}: MISSING")
-
-    state["document_issues"] = issues
-    log_step(state, "node_doc_verify", reasoning, {
-        **output,
-        "verification_result": verification_result
-    })
-    state["current_step"] = "gate_2"
-
-    return state
+    return _run_node(state, "node_doc_verify", "gate_2", context, post)
 
 
 # ── Node 5 — Lease Generation ─────────────────────────────────────────────────
 
 def node_lease_gen(state: LeasingAgentState) -> LeasingAgentState:
-    """
-    Generates the lease document then runs real consistency checks.
-    Reads: hot_approved, selected_unit, inquiry
-    Writes: lease_draft, consistency_check, current_step, reasoning_log
-    """
-    state["current_step"] = "node_lease_gen"
-
-    hot = state["hot_approved"] or {}
-    unit = state["selected_unit"] or {}
-    inquiry = state["inquiry"]
-
+    hot      = state["hot_approved"] or {}
+    unit     = state["selected_unit"] or {}
+    inquiry  = state["inquiry"]
     mall_code = unit.get("mall_code", "")
-    category = (state["classification"] or {}).get("category", "")
-    pricing_rule = get_pricing_rule(mall_code, category) or {}
+
+    pricing_rule = get_pricing_rule(
+        mall_code,
+        (state["classification"] or {}).get("category", ""),
+    ) or {}
+
+    # ── Pre-calculate all dates and financials in Python ──────────────────
+    # Never let the LLM calculate these — it gets them wrong.
+    fit_out_months   = int(hot.get("fit_out_months", 3))
+    rent_free_months = int(hot.get("rent_free_months", 0))
+    duration_years   = int(hot.get("lease_duration_years", 3))
+    base_rent_sqm    = float(hot.get("base_rent_aed_sqm", 0))
+    sqm              = float(unit.get("sqm") or 0)
+    deposit_months   = int(hot.get("security_deposit_months",
+                          int(pricing_rule.get("security_deposit_months", 3))))
+    escalation_pct   = float(hot.get("annual_escalation_pct",
+                          float(pricing_rule.get("annual_escalation_pct", 5.0))))
+
+    # Parse lease start from hot_approved — fall back to next month
+    raw_start = hot.get("lease_start_date") or \
+                (datetime.now() + relativedelta(months=1)).strftime("%Y-%m-%d")
+    lease_start   = datetime.strptime(str(raw_start)[:10], "%Y-%m-%d")
+    fit_out_end   = lease_start + relativedelta(months=fit_out_months) - relativedelta(days=1)
+    rent_commence = fit_out_end + relativedelta(days=1) + relativedelta(months=rent_free_months)
+    lease_end     = lease_start + relativedelta(years=duration_years) - relativedelta(days=1)
+
+    annual_rent      = round(base_rent_sqm * sqm, 2)
+    monthly_rent     = round(annual_rent / 12, 2)
+    security_deposit = round(monthly_rent * deposit_months, 2)
+    year2_rent       = round(annual_rent * (1 + escalation_pct / 100), 2)
+    year3_rent       = round(year2_rent  * (1 + escalation_pct / 100), 2)
+
+    calculated = {
+        "lease_start_date":       lease_start.strftime("%Y-%m-%d"),
+        "fit_out_end_date":       fit_out_end.strftime("%Y-%m-%d"),
+        "rent_commencement_date": rent_commence.strftime("%Y-%m-%d"),
+        "lease_end_date":         lease_end.strftime("%Y-%m-%d"),
+        "annual_base_rent_aed":   annual_rent,
+        "monthly_base_rent_aed":  monthly_rent,
+        "security_deposit_aed":   security_deposit,
+        "year_2_rent_aed":        year2_rent,
+        "year_3_rent_aed":        year3_rent,
+        "fit_out_months":         fit_out_months,
+        "rent_free_months":       rent_free_months,
+        "lease_duration_years":   duration_years,
+        "base_rent_aed_sqm":      base_rent_sqm,
+        "security_deposit_months": deposit_months,
+        "annual_escalation_pct":  escalation_pct,
+    }
 
     context = {
-        "hot_approved": hot,
-        "selected_unit": unit,
-        "inquiry": inquiry,
-        "documents_approved": state["documents_approved"]
+        "hot_approved":       hot,
+        "calculated_figures": calculated,  # LLM must copy these exactly
+        "unit_id":            unit.get("unit_id"),
+        "mall":               unit.get("mall_name"),
+        "size_sqm":           unit.get("sqm"),
+        "tenant_legal_name":  inquiry.get("legal_entity_name"),
+        "tenant_brand_name":  inquiry.get("brand_name"),
     }
 
-    result = call_gemini("node_lease_gen", context)
+    def post(s, output, _result):
+        lease = output.get("lease_document", {})
 
-    reasoning = result.get("reasoning", "")
-    output = result.get("output", {})
+        # Override critical financial fields with our Python-calculated values
+        # regardless of what the LLM produced
+        lease.update({
+            "lease_start_date":       calculated["lease_start_date"],
+            "fit_out_end_date":       calculated["fit_out_end_date"],
+            "rent_commencement_date": calculated["rent_commencement_date"],
+            "lease_end_date":         calculated["lease_end_date"],
+            "annual_base_rent_aed":   calculated["annual_base_rent_aed"],
+            "monthly_base_rent_aed":  calculated["monthly_base_rent_aed"],
+            "security_deposit_aed":   calculated["security_deposit_aed"],
+            "year_2_rent_aed":        calculated["year_2_rent_aed"],
+            "year_3_rent_aed":        calculated["year_3_rent_aed"],
+            "base_rent_aed_sqm":      calculated["base_rent_aed_sqm"],
+        })
+        s["lease_draft"] = lease
 
-    if "error" in result:
-        state["errors"].append(f"node_lease_gen: {result['error']}")
+        # Run consistency checks against our calculated values — not LLM values
+        cs = {
+            "fit_out_end_date":       calculated["fit_out_end_date"],
+            "lease_start_date":       calculated["lease_start_date"],
+            "rent_commencement_date": calculated["rent_commencement_date"],
+            "rent_free_months":       rent_free_months,
+            "annual_base_rent_aed":   calculated["annual_base_rent_aed"],
+            "base_rent_aed_sqm":      calculated["base_rent_aed_sqm"],
+            "security_deposit_aed":   calculated["security_deposit_aed"],
+            "legal_entity_name":      inquiry.get("legal_entity_name", ""),
+            "selected_unit_id":       unit.get("unit_id", ""),
+            "mall_code":              mall_code,
+            "ejari_required":         is_ejari_required(mall_code),
+            "selected_unit":          unit,
+            "pricing_rule":           pricing_rule,
+        }
+        passed, checks = run_all_checks(cs)
+        s["consistency_check"] = {
+            "status":       "pass" if passed else "fail",
+            "checks_run":   len(checks),
+            "issues_found": sum(1 for c in checks if not c.passed),
+            "checks_detail": [{
+                "check_id":    c.check_id,
+                "description": c.description,
+                "result":      "pass" if c.passed else "fail",
+                "detail":      c.detail,
+            } for c in checks],
+        }
 
-    lease_doc = output.get("lease_document", {})
-    state["lease_draft"] = lease_doc
+    return _run_node(state, "node_lease_gen", "gate_3", context, post)
 
-    check_state = {
-        "fit_out_end_date":        hot.get("fit_out_end_date", hot.get("rent_commencement_date", "")),
-        "lease_start_date":        lease_doc.get("lease_start_date", ""),
-        "rent_commencement_date":  lease_doc.get("rent_commencement_date", ""),
-        "rent_free_months":        hot.get("rent_free_months", 0),
-        "annual_base_rent_aed":    lease_doc.get("annual_base_rent_aed", 0),
-        "base_rent_aed_sqm":       hot.get("base_rent_aed_sqm", 0),
-        "security_deposit_aed":    lease_doc.get("security_deposit_aed", 0),
-        "legal_entity_name":       inquiry.get("legal_entity_name", ""),
-        "selected_unit_id":        unit.get("unit_id", ""),
-        "mall_code":               mall_code,
-        "ejari_required":          is_ejari_required(mall_code),
-        "selected_unit":           unit,
-        "pricing_rule":            pricing_rule,
+
+# ── Node 6 — EJARI ───────────────────────────────────────────────────────────
+
+def _build_certificate(cert_data: dict, inquiry: dict, unit: dict, lease: dict) -> dict:
+    return {
+        "registration_number": cert_data.get("ejari_ref", ""),
+        "property":            f"{unit.get('mall_name', '')} — Unit {unit.get('unit_id', '')}",
+        "landlord":            "Majid Al Futtaim Properties LLC",
+        "tenant_legal_name":   inquiry.get("legal_entity_name", ""),
+        "tenant_brand_name":   inquiry.get("brand_name", ""),
+        "lease_start_date":    lease.get("lease_start_date", ""),
+        "lease_end_date":      lease.get("lease_end_date", ""),
+        "annual_rent_aed":     lease.get("annual_base_rent_aed", 0),
+        "registration_date":   datetime.now().strftime("%Y-%m-%d"),
+        "filed_at":            cert_data.get("filed_at", ""),
+        "status":              "Registered" if cert_data.get("success") else "Failed",
+        "message":             cert_data.get("message", ""),
     }
 
-    all_passed, check_results = run_all_checks(check_state)
-
-    state["consistency_check"] = {
-        "status": "pass" if all_passed else "fail",
-        "checks_run": len(check_results),
-        "issues_found": sum(1 for r in check_results if not r.passed),
-        "checks_detail": [
-            {
-                "check_id": r.check_id,
-                "description": r.description,
-                "result": "pass" if r.passed else "fail",
-                "detail": r.detail
-            }
-            for r in check_results
-        ]
-    }
-
-    log_step(state, "node_lease_gen", reasoning, {
-        **output,
-        "consistency_check": state["consistency_check"]
-    })
-    state["current_step"] = "gate_3"
-
-    return state
-
-
-# ── Node 6 — EJARI ────────────────────────────────────────────────────────────
 
 def node_ejari(state: LeasingAgentState) -> LeasingAgentState:
-    """
-    Files EJARI using file_ejari() from tools/ejari.py.
-    Reads: lease_draft, inquiry, selected_unit
-    Writes: ejari_filed, ejari_certificate, deal_closed, reasoning_log
-    """
-    state["current_step"] = "node_ejari"
-
-    lease = state["lease_draft"] or {}
+    lease   = state["lease_draft"] or {}
     inquiry = state["inquiry"]
-    unit = state["selected_unit"] or {}
-    mall_code = unit.get("mall_code", "")
+    unit    = state["selected_unit"] or {}
 
-    filing_result = file_ejari(
-        mall_code=mall_code,
-        inquiry_id=inquiry.get("inquiry_id", ""),
-        legal_entity_name=inquiry.get("legal_entity_name", ""),
-        unit_id=unit.get("unit_id", ""),
-        lease_start_date=lease.get("lease_start_date", ""),
-        lease_expiry_date=lease.get("lease_end_date", ""),
-        annual_rent_aed=lease.get("annual_base_rent_aed", 0),
-        kofax_doc_ref=lease.get("document_reference", "MAF-LEASE-POC")
+    filing = file_ejari(
+        mall_code=         unit.get("mall_code", ""),
+        inquiry_id=        inquiry.get("inquiry_id", ""),
+        legal_entity_name= inquiry.get("legal_entity_name", ""),
+        unit_id=           unit.get("unit_id", ""),
+        lease_start_date=  lease.get("lease_start_date", ""),
+        lease_expiry_date= lease.get("lease_end_date", ""),
+        annual_rent_aed=   lease.get("annual_base_rent_aed", 0),
+        kofax_doc_ref=     lease.get("document_reference", "MAF-LEASE-POC"),
     )
 
-    ejari_ref = filing_result.get("ejari_ref", "")
-
-    ejari_certificate = {
-        "registration_number": ejari_ref,
-        "property": f"{unit.get('mall', '')} — Unit {unit.get('unit_id', '')}",
-        "landlord": "Majid Al Futtaim Properties LLC",
-        "tenant_legal_name": inquiry.get("legal_entity_name", ""),
-        "tenant_brand_name": inquiry.get("brand_name", ""),
-        "lease_start_date": lease.get("lease_start_date", ""),
-        "lease_end_date": lease.get("lease_end_date", ""),
-        "annual_rent_aed": lease.get("annual_base_rent_aed", 0),
-        "registration_date": datetime.now().strftime("%Y-%m-%d"),
-        "filed_at": filing_result.get("filed_at", ""),
-        "status": "Registered" if filing_result.get("success") else "Failed",
-        "message": filing_result.get("message", "")
-    }
+    cert = _build_certificate(filing, inquiry, unit, lease)
 
     context = {
-        "lease_draft": lease,
-        "ejari_certificate": ejari_certificate,
-        "inquiry": inquiry,
-        "selected_unit": unit,
-        "filing_result": filing_result
+        "ejari_certificate": cert,
+        "brand_name":        inquiry.get("brand_name"),
+        "unit_id":           unit.get("unit_id"),
+        "mall":              unit.get("mall_name"),
+        "filing_success":    filing.get("success"),
     }
 
-    result = call_gemini("node_ejari", context)
-    reasoning = result.get("reasoning", "")
-    output = result.get("output", {})
+    def post(s, output, _result):
+        s["ejari_certificate"] = cert
+        s["ejari_filed"]       = filing.get("success", False)
+        s["deal_closed"]       = filing.get("success", False)
 
-    if "error" in result:
-        state["errors"].append(f"node_ejari: {result['error']}")
-
-    state["ejari_certificate"] = ejari_certificate
-    state["ejari_filed"] = filing_result.get("success", False)
-    state["deal_closed"] = filing_result.get("success", False)
-
-    log_step(state, "node_ejari", reasoning, {
-        "ejari_certificate": ejari_certificate,
-        "filing_result": filing_result,
-        "handoff_note": output.get("handoff_note", "")
-    })
-    state["current_step"] = "complete"
-
-    return state
+    return _run_node(state, "node_ejari", "complete", context, post)

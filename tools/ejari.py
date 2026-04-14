@@ -1,60 +1,40 @@
-"""
-tools/ejari.py
-
-EJARI filing simulation.
-EJARI is the Dubai Land Department's mandatory tenancy contract
-registration system. All Dubai commercial leases must be registered.
-
-In POC mode: generates a reference number and simulates the filing.
-In production: would call the EJARI portal REST API.
-"""
+# ============================================================================
+# tools/ejari.py — EJARI registration simulation
+# Writes to ejari_registrations table via RealDictCursor.
+# file_ejari() signature matches what nodes.py expects.
+# ============================================================================
 
 import uuid
-from datetime import datetime
-from typing import Optional
-from tools.yardi import get_mall_by_code, is_ejari_required
+from datetime import date, datetime
+from db import get_conn, dict_cursor
+from tools.yardi import is_ejari_required
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# EJARI ELIGIBILITY
-# ══════════════════════════════════════════════════════════════════════════
-
-def check_ejari_required(mall_code: str) -> tuple[bool, str]:
-    """
-    Determine whether EJARI registration is required for this mall.
-    Returns (required: bool, reason: str).
-    """
-    mall = get_mall_by_code(mall_code)
-    if not mall:
-        return False, f"Mall {mall_code} not found."
-
-    if mall.get("ejari_applicable"):
-        return True, f"{mall['mall_name']} is in Dubai — EJARI mandatory."
-    else:
-        country = mall.get("country", "unknown")
-        emirate = mall.get("emirate", country)
-        return False, f"{mall['mall_name']} is in {emirate} — EJARI not applicable."
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# REFERENCE GENERATION
-# ══════════════════════════════════════════════════════════════════════════
+# ── Reference generation ──────────────────────────────────────────────────────
 
 def generate_ejari_reference(mall_code: str, inquiry_id: str) -> str:
     """
     Generate a mock EJARI reference number.
     Format: EJARI-DXB-{YEAR}-{MALL_CODE}-{SUFFIX}
-
-    In production: returned by the EJARI portal API after successful submission.
     """
-    year   = datetime.today().year
-    suffix = inquiry_id.split("-")[-1]  # last 4 digits of inquiry ID
+    year = datetime.today().year
+    suffix = inquiry_id.split("-")[-1]
     return f"EJARI-DXB-{year}-{mall_code}-{suffix}"
 
 
-# ══════════════════════════════════════════════════════════════════════════
-# FILING
-# ══════════════════════════════════════════════════════════════════════════
+# ── Eligibility ───────────────────────────────────────────────────────────────
+
+def check_ejari_required(mall_code: str) -> tuple[bool, str]:
+    """
+    Returns (required: bool, reason: str).
+    """
+    required = is_ejari_required(mall_code)
+    if required:
+        return True, f"Mall {mall_code} is in Dubai — EJARI mandatory."
+    return False, f"Mall {mall_code} is outside Dubai — EJARI not applicable."
+
+
+# ── Filing ────────────────────────────────────────────────────────────────────
 
 def file_ejari(
     mall_code: str,
@@ -64,81 +44,109 @@ def file_ejari(
     lease_start_date: str,
     lease_expiry_date: str,
     annual_rent_aed: float,
-    kofax_doc_ref: str
+    kofax_doc_ref: str,
 ) -> dict:
     """
-    Simulate submitting a lease to the EJARI portal for registration.
-
-    Returns a filing result dict:
+    Simulate submitting a lease to the EJARI portal.
+    Writes to ejari_registrations table for Dubai properties.
+    Returns result dict matching nodes.py expectations:
     {
-        "success":    bool,
-        "ejari_ref":  str | None,
-        "filed_at":   str,
-        "message":    str
+        "success":   bool,
+        "ejari_ref": str | None,
+        "filed_at":  str,
+        "message":   str
     }
     """
     required, reason = check_ejari_required(mall_code)
 
     if not required:
-        print(f"  [EJARI] Not required — {reason}")
         return {
-            "success":   True,
+            "success": True,
             "ejari_ref": None,
-            "filed_at":  datetime.now().isoformat(),
-            "message":   reason
+            "filed_at": datetime.now().isoformat(),
+            "message": reason,
         }
 
-    # Validate required fields before filing
-    missing_fields = []
-    if not legal_entity_name: missing_fields.append("legal_entity_name")
-    if not unit_id:            missing_fields.append("unit_id")
-    if not lease_start_date:   missing_fields.append("lease_start_date")
-    if not lease_expiry_date:  missing_fields.append("lease_expiry_date")
-    if not annual_rent_aed:    missing_fields.append("annual_rent_aed")
-    if not kofax_doc_ref:      missing_fields.append("kofax_doc_ref")
+    # Validate required fields
+    missing_fields = [
+        f for f, v in {
+            "legal_entity_name": legal_entity_name,
+            "unit_id": unit_id,
+            "lease_start_date": lease_start_date,
+            "lease_expiry_date": lease_expiry_date,
+            "annual_rent_aed": annual_rent_aed,
+            "kofax_doc_ref": kofax_doc_ref,
+        }.items() if not v
+    ]
 
     if missing_fields:
         msg = f"EJARI filing failed — missing fields: {', '.join(missing_fields)}"
-        print(f"  [EJARI] {msg}")
         return {
-            "success":   False,
+            "success": False,
             "ejari_ref": None,
-            "filed_at":  datetime.now().isoformat(),
-            "message":   msg
+            "filed_at": datetime.now().isoformat(),
+            "message": msg,
         }
 
-    # Simulate successful filing
     ejari_ref = generate_ejari_reference(mall_code, inquiry_id)
-    filed_at  = datetime.now().isoformat()
+    today = date.today().isoformat()
+    filed_at = datetime.now().isoformat()
 
-    print(f"  [EJARI] Filing submitted for {legal_entity_name}")
-    print(f"  [EJARI] Unit       : {unit_id}")
-    print(f"  [EJARI] Lease term : {lease_start_date} → {lease_expiry_date}")
-    print(f"  [EJARI] Annual rent: AED {annual_rent_aed:,.0f}")
-    print(f"  [EJARI] Doc ref    : {kofax_doc_ref}")
-    print(f"  [EJARI] Reference  : {ejari_ref}  ✓")
+    # Look up property_id from mall_code
+    from tools.yardi import get_mall_by_code
+    prop = get_mall_by_code(mall_code)
+    property_id = prop["property_id"] if prop else None
+
+    # Write to DB
+    with get_conn() as conn:
+        cur = dict_cursor(conn)
+        cur.execute(
+            """
+            INSERT INTO ejari_registrations
+              (registration_number, lease_id, property_id, unit_id,
+               tenant_legal_name, annual_rent, registration_date,
+               status, message, filed_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            """,
+            (
+                ejari_ref,
+                kofax_doc_ref,      # using kofax_doc_ref as lease reference
+                property_id,
+                unit_id,
+                legal_entity_name,
+                annual_rent_aed,
+                today,
+                "Registered",
+                "Successfully registered with Dubai Land Department",
+            ),
+        )
 
     return {
-        "success":   True,
+        "success": True,
         "ejari_ref": ejari_ref,
-        "filed_at":  filed_at,
-        "message":   f"EJARI registration successful. Ref: {ejari_ref}"
+        "filed_at": filed_at,
+        "message": f"EJARI registration successful. Ref: {ejari_ref}",
     }
 
 
+def get_ejari_registration(lease_id: str) -> dict | None:
+    """Retrieve an existing EJARI registration by lease_id."""
+    with get_conn() as conn:
+        cur = dict_cursor(conn)
+        cur.execute(
+            "SELECT * FROM ejari_registrations WHERE lease_id = %s", (lease_id,)
+        )
+        return cur.fetchone()
+
+
 def get_ejari_certificate(ejari_ref: str) -> dict:
-    """
-    Simulate retrieving the EJARI certificate after filing.
-    In production: poll the EJARI API until certificate is ready.
-    """
+    """Simulate retrieving the EJARI certificate after filing."""
     if not ejari_ref:
         return {"success": False, "certificate": None, "message": "No EJARI ref provided."}
-
-    print(f"  [EJARI] Certificate retrieved for {ejari_ref}")
     return {
-        "success":     True,
-        "ejari_ref":   ejari_ref,
+        "success": True,
+        "ejari_ref": ejari_ref,
         "certificate": f"CERT-{ejari_ref}",
-        "issued_at":   datetime.now().isoformat(),
-        "message":     "Certificate ready."
+        "issued_at": datetime.now().isoformat(),
+        "message": "Certificate ready.",
     }
