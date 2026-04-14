@@ -1,8 +1,11 @@
 # agent/nodes.py
 # All agent nodes for the leasing workflow
 
-import json, os, time
-from datetime import datetime
+import json
+import os
+import time
+from decimal import Decimal
+from datetime import date, datetime
 from dateutil.relativedelta import relativedelta
 from dotenv import load_dotenv
 from groq import Groq
@@ -21,8 +24,12 @@ from tools.verification import run_all_checks
 from tools.ejari import file_ejari, generate_ejari_reference
 from tools.scoring import calculate_lead_score, calculate_match_score
 
-from decimal import Decimal
-from datetime import date, datetime
+load_dotenv()
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+MODEL = "llama-3.1-8b-instant"
+
+
+# ── JSON serializer — handles Postgres Decimal and date types ─────────────────
 
 def _decimal_default(obj):
     if isinstance(obj, Decimal):
@@ -31,12 +38,8 @@ def _decimal_default(obj):
         return obj.isoformat()
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
-load_dotenv()
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-MODEL = "llama-3.1-8b-instant"
 
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── LLM caller ────────────────────────────────────────────────────────────────
 
 def _call_llm(node_name: str, context: dict) -> dict:
     """Calls Groq with node prompt and context. Retries on rate limit or bad JSON."""
@@ -49,8 +52,10 @@ def _call_llm(node_name: str, context: dict) -> dict:
         try:
             raw = client.chat.completions.create(
                 model=MODEL, temperature=0.3, max_tokens=2000,
-                messages=[{"role": "system", "content": prompt},
-                          {"role": "user", "content": msg}]
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user",   "content": msg},
+                ]
             ).choices[0].message.content.strip()
         except Exception as e:
             if attempt < 2 and ("429" in str(e) or "rate_limit" in str(e).lower()):
@@ -58,7 +63,6 @@ def _call_llm(node_name: str, context: dict) -> dict:
                 continue
             return {"reasoning": f"LLM error: {e}", "output": {}, "error": str(e)}
 
-        # Strip markdown fences
         if raw.startswith("```"):
             raw = raw.split("```")[1].removeprefix("json").strip()
         try:
@@ -71,12 +75,13 @@ def _call_llm(node_name: str, context: dict) -> dict:
     return {"reasoning": "", "output": {}}
 
 
+# ── Node runner wrapper ───────────────────────────────────────────────────────
+
 def _run_node(state, step_name, next_step, context, post_fn=None):
-    """Common wrapper: set step → call LLM → handle errors → log → set next step."""
     state["current_step"] = step_name
-    result = _call_llm(step_name, context)
+    result   = _call_llm(step_name, context)
     reasoning = result.get("reasoning", "")
-    output = result.get("output", {})
+    output    = result.get("output", {})
 
     if "error" in result:
         state["errors"].append(f"{step_name}: {result['error']}")
@@ -92,8 +97,9 @@ def _run_node(state, step_name, next_step, context, post_fn=None):
     return state
 
 
+# ── Slim helpers — reduce token usage ────────────────────────────────────────
+
 def _slim_inquiry(inquiry: dict, fields=None) -> dict:
-    """Extract only the fields the LLM needs from the inquiry."""
     default = ["brand_name", "legal_entity_name", "category", "preferred_mall",
                "preferred_zone", "size_min_sqm", "size_max_sqm", "target_opening",
                "first_uae_store", "priority", "risk_flag", "channel"]
@@ -101,7 +107,7 @@ def _slim_inquiry(inquiry: dict, fields=None) -> dict:
 
 
 def _slim_unit(unit: dict) -> dict:
-    """Extract only the fields the LLM needs from a unit — uses schema field names."""
+    """Extract only the fields the LLM needs — uses schema field names."""
     return {k: unit.get(k) for k in [
         "unit_id", "mall_name", "floor", "zone", "sqm", "status",
         "base_rent_sqm", "service_charge_sqm", "marketing_levy_sqm",
@@ -109,30 +115,31 @@ def _slim_unit(unit: dict) -> dict:
     ] if unit.get(k) is not None}
 
 
-# ── Node 1 — Intake & Lead Scoring ────────────────────────────────────────────
+# ── Node 1 — Intake & Lead Scoring ───────────────────────────────────────────
 
 def node_intake(state: LeasingAgentState) -> LeasingAgentState:
     inquiry = state["inquiry"]
-    lead = calculate_lead_score(inquiry)
+    lead    = calculate_lead_score(inquiry)
     state["lead_score_result"] = lead
 
     context = {
-        "inquiry": _slim_inquiry(inquiry),
+        "inquiry":    _slim_inquiry(inquiry),
         "lead_score": {"lead_score": lead["lead_score"], "lead_grade": lead["lead_grade"]},
     }
 
-    def post(s, output, result):
+    def post(s, output, _result):
         s["classification"] = output
 
     return _run_node(state, "node_intake", "node_unit_match", context, post)
 
 
-# ── Node 2 — Unit Match & Scoring ─────────────────────────────────────────────
+# ── Node 2 — Unit Match & Scoring ────────────────────────────────────────────
 
 def node_unit_match(state: LeasingAgentState) -> LeasingAgentState:
     state["current_step"] = "node_unit_match"
     inquiry = state["inquiry"]
 
+    # Fetch available units
     available = get_available_units(
         size_min=inquiry.get("size_min_sqm", 0),
         size_max=inquiry.get("size_max_sqm", 9999),
@@ -142,10 +149,8 @@ def node_unit_match(state: LeasingAgentState) -> LeasingAgentState:
     if not available:
         available = [u.copy() for u in get_all_units()
                      if u["status"] in ("vacant", "expiring_soon")]
-        for u in available:
-            u["_preferred"] = False
 
-    # Score and rank — top 3 only
+    # Score and rank — top 3 only to stay within token limits
     for unit in available:
         unit["_scoring"] = calculate_match_score(inquiry, unit)
     available.sort(key=lambda u: u["_scoring"]["match_score"], reverse=True)
@@ -164,36 +169,43 @@ def node_unit_match(state: LeasingAgentState) -> LeasingAgentState:
     context = {
         "inquiry": _slim_inquiry(inquiry, ["brand_name", "category", "preferred_mall",
                                             "size_min_sqm", "size_max_sqm"]),
-        "lead_score": state.get("lead_score_result", {}),
+        "lead_score":      state.get("lead_score_result", {}),
         "available_units": [_slim_unit(u) for u in scored],
     }
-    result = _call_llm("node_unit_match", context)
+    result    = _call_llm("node_unit_match", context)
     reasoning = result.get("reasoning", "")
-    output = result.get("output", {})
+    output    = result.get("output", {})
 
     if "error" in result:
         state["errors"].append(f"node_unit_match: {result['error']}")
 
+    # Merge LLM ranking with full DB data from scored list
     llm_units = output.get("recommended_units", [])
     final = []
     for lu in llm_units:
         src = next((u for u in scored if u.get("unit_id") == lu.get("unit_id")), None)
         if src:
-            lu["_scoring"] = src["_scoring"]
+            # Overwrite LLM values with authoritative DB values
+            lu.update({k: src[k] for k in [
+                "sqm", "base_rent_sqm", "mall_name", "zone",
+                "floor", "status", "category_fit", "_scoring"
+            ] if k in src})
         final.append(lu)
 
+    # Fallback if LLM returned nothing or wrong unit IDs
     if not final:
         final = [{
-            "unit_id":          u["unit_id"],
-            "mall_name":        u.get("mall_name"),       # ← schema field
-            "zone":             u.get("zone"),
-            "sqm":              u.get("sqm"),             # ← schema field
-            "base_rent_sqm":    u.get("base_rent_sqm"),   # ← schema field
-            "match_rationale":  u["_scoring"].get("demand_signal", ""),
-            "_scoring":         u["_scoring"],
+            "unit_id":       u["unit_id"],
+            "mall_name":     u.get("mall_name"),
+            "zone":          u.get("zone"),
+            "sqm":           u.get("sqm"),
+            "base_rent_sqm": u.get("base_rent_sqm"),
+            "_scoring":      u["_scoring"],
         } for u in scored]
 
+    # Single assignment — no duplicate
     state["matched_units"] = final
+
     state["reasoning_log"].append({
         "step": "node_unit_match", "reasoning": reasoning,
         "output": {**output, "units_scored": len(scored),
@@ -204,35 +216,36 @@ def node_unit_match(state: LeasingAgentState) -> LeasingAgentState:
     return state
 
 
-# ── Node 3 — HoT Draft ────────────────────────────────────────────────────────
+# ── Node 3 — HoT Draft ───────────────────────────────────────────────────────
 
 def node_hot_draft(state: LeasingAgentState) -> LeasingAgentState:
     inquiry = state["inquiry"]
 
-    uid = inquiry.get("assigned_unit")
+    # Resolve unit — use assigned_unit from inquiry first, then top match
+    uid      = inquiry.get("assigned_unit")
     top_unit = get_unit_by_id(uid) if uid else None
     if not top_unit and state["matched_units"]:
-        uid = state["matched_units"][0].get("unit_id")
+        uid      = state["matched_units"][0].get("unit_id")
         top_unit = get_unit_by_id(uid) if uid else None
     if not top_unit:
         state["errors"].append("node_hot_draft: No matched unit available for HoT drafting")
         return state
 
-    pricing = get_pricing_rule(
-        top_unit.get("mall_code", ""),
-        inquiry.get("category", ""),
-    ) or {}
+    pricing     = get_pricing_rule(top_unit.get("mall_code", ""), inquiry.get("category", "")) or {}
     lease_start = (datetime.now() + relativedelta(months=1)).strftime("%Y-%m-%d")
 
     context = {
         "inquiry": _slim_inquiry(inquiry, ["brand_name", "legal_entity_name",
                                             "category", "first_uae_store", "target_opening"]),
-        "selected_unit": _slim_unit(top_unit),
+        "selected_unit":     _slim_unit(top_unit),
         "pricing_parameters": pricing,
-        "lease_start_date": lease_start,
+        "lease_start_date":  lease_start,
     }
 
-    def post(s, output, result):
+    def post(s, output, _result):
+        # Always ensure lease_start_date is in the HoT draft
+        if "lease_start_date" not in output:
+            output["lease_start_date"] = lease_start
         s["hot_draft"] = output
 
     return _run_node(state, "node_hot_draft", "gate_1", context, post)
@@ -241,37 +254,37 @@ def node_hot_draft(state: LeasingAgentState) -> LeasingAgentState:
 # ── Node 4 — Document Request ─────────────────────────────────────────────────
 
 def node_doc_request(state: LeasingAgentState) -> LeasingAgentState:
-    inquiry = state["inquiry"]
-    tenant_type = determine_tenant_type(inquiry)
+    inquiry       = state["inquiry"]
+    tenant_type   = determine_tenant_type(inquiry)
     required_docs = get_required_documents(tenant_type)
 
     context = {
         "inquiry": _slim_inquiry(inquiry, ["brand_name", "legal_entity_name",
                                             "contact_name", "first_uae_store", "category"]),
-        "tenant_type": tenant_type,
+        "tenant_type":       tenant_type,
         "required_documents": required_docs,
     }
 
-    def post(s, output, result):
+    def post(s, output, _result):
         s["document_checklist"] = required_docs
-        s["tenant_message"] = output.get("tenant_message", "")
+        s["tenant_message"]     = output.get("tenant_message", "")
 
     return _run_node(state, "node_doc_request", "node_doc_verify", context, post)
 
 
-# ── Node 4b — Document Verification ───────────────────────────────────────────
+# ── Node 4b — Document Verification ──────────────────────────────────────────
 
 def node_doc_verify(state: LeasingAgentState) -> LeasingAgentState:
     verification = verify_documents(state["inquiry_id"])
     state["documents_received"] = get_verification_scenario(state["inquiry_id"]) or {}
 
     context = {
-        "document_checklist": state["document_checklist"],
+        "document_checklist":  state["document_checklist"],
         "verification_result": verification,
-        "brand_name": state["inquiry"].get("brand_name"),
+        "brand_name":          state["inquiry"].get("brand_name"),
     }
 
-    def post(s, output, result):
+    def post(s, output, _result):
         issues = []
         for doc in verification.get("expired", []):
             issues.append(f"{doc['doc_type']}: EXPIRED — {doc.get('expiry_date', '')}")
@@ -285,36 +298,98 @@ def node_doc_verify(state: LeasingAgentState) -> LeasingAgentState:
 # ── Node 5 — Lease Generation ─────────────────────────────────────────────────
 
 def node_lease_gen(state: LeasingAgentState) -> LeasingAgentState:
-    hot = state["hot_approved"] or {}
-    unit = state["selected_unit"] or {}
-    inquiry = state["inquiry"]
+    hot      = state["hot_approved"] or {}
+    unit     = state["selected_unit"] or {}
+    inquiry  = state["inquiry"]
     mall_code = unit.get("mall_code", "")
+
     pricing_rule = get_pricing_rule(
         mall_code,
         (state["classification"] or {}).get("category", ""),
     ) or {}
 
-    context = {
-        "hot_approved": hot,
-        "unit_id":             unit.get("unit_id"),
-        "mall":                unit.get("mall_name"),     # ← schema field
-        "size_sqm":            unit.get("sqm"),           # ← schema field
-        "tenant_legal_name":   inquiry.get("legal_entity_name"),
-        "tenant_brand_name":   inquiry.get("brand_name"),
+    # ── Pre-calculate all dates and financials in Python ──────────────────
+    # Never let the LLM calculate these — it gets them wrong.
+    fit_out_months   = int(hot.get("fit_out_months", 3))
+    rent_free_months = int(hot.get("rent_free_months", 0))
+    duration_years   = int(hot.get("lease_duration_years", 3))
+    base_rent_sqm    = float(hot.get("base_rent_aed_sqm", 0))
+    sqm              = float(unit.get("sqm") or 0)
+    deposit_months   = int(hot.get("security_deposit_months",
+                          int(pricing_rule.get("security_deposit_months", 3))))
+    escalation_pct   = float(hot.get("annual_escalation_pct",
+                          float(pricing_rule.get("annual_escalation_pct", 5.0))))
+
+    # Parse lease start from hot_approved — fall back to next month
+    raw_start = hot.get("lease_start_date") or \
+                (datetime.now() + relativedelta(months=1)).strftime("%Y-%m-%d")
+    lease_start   = datetime.strptime(str(raw_start)[:10], "%Y-%m-%d")
+    fit_out_end   = lease_start + relativedelta(months=fit_out_months) - relativedelta(days=1)
+    rent_commence = fit_out_end + relativedelta(days=1) + relativedelta(months=rent_free_months)
+    lease_end     = lease_start + relativedelta(years=duration_years) - relativedelta(days=1)
+
+    annual_rent      = round(base_rent_sqm * sqm, 2)
+    monthly_rent     = round(annual_rent / 12, 2)
+    security_deposit = round(monthly_rent * deposit_months, 2)
+    year2_rent       = round(annual_rent * (1 + escalation_pct / 100), 2)
+    year3_rent       = round(year2_rent  * (1 + escalation_pct / 100), 2)
+
+    calculated = {
+        "lease_start_date":       lease_start.strftime("%Y-%m-%d"),
+        "fit_out_end_date":       fit_out_end.strftime("%Y-%m-%d"),
+        "rent_commencement_date": rent_commence.strftime("%Y-%m-%d"),
+        "lease_end_date":         lease_end.strftime("%Y-%m-%d"),
+        "annual_base_rent_aed":   annual_rent,
+        "monthly_base_rent_aed":  monthly_rent,
+        "security_deposit_aed":   security_deposit,
+        "year_2_rent_aed":        year2_rent,
+        "year_3_rent_aed":        year3_rent,
+        "fit_out_months":         fit_out_months,
+        "rent_free_months":       rent_free_months,
+        "lease_duration_years":   duration_years,
+        "base_rent_aed_sqm":      base_rent_sqm,
+        "security_deposit_months": deposit_months,
+        "annual_escalation_pct":  escalation_pct,
     }
 
-    def post(s, output, result):
+    context = {
+        "hot_approved":       hot,
+        "calculated_figures": calculated,  # LLM must copy these exactly
+        "unit_id":            unit.get("unit_id"),
+        "mall":               unit.get("mall_name"),
+        "size_sqm":           unit.get("sqm"),
+        "tenant_legal_name":  inquiry.get("legal_entity_name"),
+        "tenant_brand_name":  inquiry.get("brand_name"),
+    }
+
+    def post(s, output, _result):
         lease = output.get("lease_document", {})
+
+        # Override critical financial fields with our Python-calculated values
+        # regardless of what the LLM produced
+        lease.update({
+            "lease_start_date":       calculated["lease_start_date"],
+            "fit_out_end_date":       calculated["fit_out_end_date"],
+            "rent_commencement_date": calculated["rent_commencement_date"],
+            "lease_end_date":         calculated["lease_end_date"],
+            "annual_base_rent_aed":   calculated["annual_base_rent_aed"],
+            "monthly_base_rent_aed":  calculated["monthly_base_rent_aed"],
+            "security_deposit_aed":   calculated["security_deposit_aed"],
+            "year_2_rent_aed":        calculated["year_2_rent_aed"],
+            "year_3_rent_aed":        calculated["year_3_rent_aed"],
+            "base_rent_aed_sqm":      calculated["base_rent_aed_sqm"],
+        })
         s["lease_draft"] = lease
 
+        # Run consistency checks against our calculated values — not LLM values
         cs = {
-            "fit_out_end_date":       hot.get("fit_out_end_date", hot.get("rent_commencement_date", "")),
-            "lease_start_date":       lease.get("lease_start_date", ""),
-            "rent_commencement_date": lease.get("rent_commencement_date", ""),
-            "rent_free_months":       hot.get("rent_free_months", 0),
-            "annual_base_rent_aed":   lease.get("annual_base_rent_aed", 0),
-            "base_rent_aed_sqm":      hot.get("base_rent_aed_sqm", 0),
-            "security_deposit_aed":   lease.get("security_deposit_aed", 0),
+            "fit_out_end_date":       calculated["fit_out_end_date"],
+            "lease_start_date":       calculated["lease_start_date"],
+            "rent_commencement_date": calculated["rent_commencement_date"],
+            "rent_free_months":       rent_free_months,
+            "annual_base_rent_aed":   calculated["annual_base_rent_aed"],
+            "base_rent_aed_sqm":      calculated["base_rent_aed_sqm"],
+            "security_deposit_aed":   calculated["security_deposit_aed"],
             "legal_entity_name":      inquiry.get("legal_entity_name", ""),
             "selected_unit_id":       unit.get("unit_id", ""),
             "mall_code":              mall_code,
@@ -338,54 +413,54 @@ def node_lease_gen(state: LeasingAgentState) -> LeasingAgentState:
     return _run_node(state, "node_lease_gen", "gate_3", context, post)
 
 
-# ── Node 6 — EJARI ────────────────────────────────────────────────────────────
+# ── Node 6 — EJARI ───────────────────────────────────────────────────────────
 
 def _build_certificate(cert_data: dict, inquiry: dict, unit: dict, lease: dict) -> dict:
     return {
         "registration_number": cert_data.get("ejari_ref", ""),
-        "property": f"{unit.get('mall_name', '')} — Unit {unit.get('unit_id', '')}",  # ← schema field
-        "landlord": "Majid Al Futtaim Properties LLC",
-        "tenant_legal_name":  inquiry.get("legal_entity_name", ""),
-        "tenant_brand_name":  inquiry.get("brand_name", ""),
-        "lease_start_date":   lease.get("lease_start_date", ""),
-        "lease_end_date":     lease.get("lease_end_date", ""),
-        "annual_rent_aed":    lease.get("annual_base_rent_aed", 0),
-        "registration_date":  datetime.now().strftime("%Y-%m-%d"),
-        "filed_at":           cert_data.get("filed_at", ""),
-        "status":   "Registered" if cert_data.get("success") else "Failed",
-        "message":  cert_data.get("message", ""),
+        "property":            f"{unit.get('mall_name', '')} — Unit {unit.get('unit_id', '')}",
+        "landlord":            "Majid Al Futtaim Properties LLC",
+        "tenant_legal_name":   inquiry.get("legal_entity_name", ""),
+        "tenant_brand_name":   inquiry.get("brand_name", ""),
+        "lease_start_date":    lease.get("lease_start_date", ""),
+        "lease_end_date":      lease.get("lease_end_date", ""),
+        "annual_rent_aed":     lease.get("annual_base_rent_aed", 0),
+        "registration_date":   datetime.now().strftime("%Y-%m-%d"),
+        "filed_at":            cert_data.get("filed_at", ""),
+        "status":              "Registered" if cert_data.get("success") else "Failed",
+        "message":             cert_data.get("message", ""),
     }
 
 
 def node_ejari(state: LeasingAgentState) -> LeasingAgentState:
-    lease = state["lease_draft"] or {}
+    lease   = state["lease_draft"] or {}
     inquiry = state["inquiry"]
-    unit = state["selected_unit"] or {}
+    unit    = state["selected_unit"] or {}
 
     filing = file_ejari(
-        mall_code=unit.get("mall_code", ""),
-        inquiry_id=inquiry.get("inquiry_id", ""),
-        legal_entity_name=inquiry.get("legal_entity_name", ""),
-        unit_id=unit.get("unit_id", ""),
-        lease_start_date=lease.get("lease_start_date", ""),
-        lease_expiry_date=lease.get("lease_end_date", ""),
-        annual_rent_aed=lease.get("annual_base_rent_aed", 0),
-        kofax_doc_ref=lease.get("document_reference", "MAF-LEASE-POC"),
+        mall_code=         unit.get("mall_code", ""),
+        inquiry_id=        inquiry.get("inquiry_id", ""),
+        legal_entity_name= inquiry.get("legal_entity_name", ""),
+        unit_id=           unit.get("unit_id", ""),
+        lease_start_date=  lease.get("lease_start_date", ""),
+        lease_expiry_date= lease.get("lease_end_date", ""),
+        annual_rent_aed=   lease.get("annual_base_rent_aed", 0),
+        kofax_doc_ref=     lease.get("document_reference", "MAF-LEASE-POC"),
     )
 
     cert = _build_certificate(filing, inquiry, unit, lease)
 
     context = {
         "ejari_certificate": cert,
-        "brand_name":  inquiry.get("brand_name"),
-        "unit_id":     unit.get("unit_id"),
-        "mall":        unit.get("mall_name"),    # ← schema field
-        "filing_success": filing.get("success"),
+        "brand_name":        inquiry.get("brand_name"),
+        "unit_id":           unit.get("unit_id"),
+        "mall":              unit.get("mall_name"),
+        "filing_success":    filing.get("success"),
     }
 
-    def post(s, output, result):
+    def post(s, output, _result):
         s["ejari_certificate"] = cert
-        s["ejari_filed"]  = filing.get("success", False)
-        s["deal_closed"]  = filing.get("success", False)
+        s["ejari_filed"]       = filing.get("success", False)
+        s["deal_closed"]       = filing.get("success", False)
 
     return _run_node(state, "node_ejari", "complete", context, post)

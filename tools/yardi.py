@@ -78,8 +78,8 @@ def get_available_units(
         params = [size_min, size_max, category.lower()]
 
         if preferred_mall:
-            q += " AND LOWER(p.name) LIKE %s"
-            params.append(f"%{preferred_mall.lower()}%")
+            q += " AND (LOWER(p.name) LIKE %s OR p.property_id = %s)"
+            params.extend([f"%{preferred_mall.lower()}%", preferred_mall])
 
         q += " ORDER BY p.name, u.unit_id"
         cur.execute(q, params)
@@ -99,8 +99,8 @@ def get_available_units(
         """
         params2 = [size_min, size_max]
         if preferred_mall:
-            q2 += " AND LOWER(p.name) LIKE %s"
-            params2.append(f"%{preferred_mall.lower()}%")
+            q += " AND (LOWER(p.name) LIKE %s OR p.property_id = %s)"
+            params.extend([f"%{preferred_mall.lower()}%", preferred_mall])
         q2 += " ORDER BY p.name, u.unit_id"
         cur.execute(q2, params2)
         return cur.fetchall()

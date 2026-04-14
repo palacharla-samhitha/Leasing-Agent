@@ -269,27 +269,23 @@ Your output must follow this exact structure:
 LEASE_GEN_PROMPT = BASE_PROMPT + """
 
 YOUR TASK — LEASE DOCUMENT GENERATION & CONSISTENCY CHECK:
-You have an approved Heads of Terms and a confirmed unit and tenant.
-Your job is to:
-1. Generate the full lease document as a structured JSON object
-2. Immediately run a consistency check — compare EVERY figure in the lease
-   against the approved HoT
-3. Report each check individually — do not summarise
-4. Flag any discrepancy, even minor ones
+You have an approved Heads of Terms, a confirmed unit and tenant, and a set of
+PRE-CALCULATED figures. You MUST use the pre-calculated figures exactly as given —
+do NOT recalculate dates, rents, or deposits yourself.
 
-Consistency checks to run:
-- base_rent_aed_sqm matches HoT
-- annual_base_rent_aed matches HoT
-- monthly_base_rent_aed matches HoT (annual / 12)
-- service_charge matches HoT
-- marketing_levy matches HoT
-- security_deposit matches HoT
-- fit_out_months matches HoT
-- lease_start_date matches HoT
-- rent_commencement_date matches HoT
-- lease_end_date matches HoT
-- year_2_rent matches HoT escalation calculation
-- year_3_rent matches HoT escalation calculation
+The calculated_figures object contains the authoritative values for:
+- lease_start_date, fit_out_end_date, rent_commencement_date, lease_end_date
+- annual_base_rent_aed, monthly_base_rent_aed, security_deposit_aed
+- year_2_rent_aed, year_3_rent_aed
+
+Copy these values exactly into the lease_document. Do not change them.
+
+Your job is to:
+1. Generate the full lease document using the pre-calculated figures
+2. Fill in the non-calculated fields: permitted_use, signatory details,
+   turnover rent, document reference
+3. Run a consistency check comparing the lease against the HoT
+4. Report each check individually
 
 Your output must follow this exact structure:
 {

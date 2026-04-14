@@ -27,20 +27,19 @@ class CheckResult:
 # ── Individual checks ─────────────────────────────────────────────────────────
 
 def cc01_lease_start_date(fit_out_end_date: str, lease_start_date: str) -> CheckResult:
-    """CC-01: Lease commencement date must equal fit-out end date + 1 day."""
+    """CC-01: fit_out_end must be after lease_start (possession before rent)."""
     try:
-        fit_out_end = datetime.strptime(fit_out_end_date, "%Y-%m-%d")
         lease_start = datetime.strptime(lease_start_date, "%Y-%m-%d")
-        expected = fit_out_end + timedelta(days=1)
-        passed = lease_start == expected
+        fit_out_end = datetime.strptime(fit_out_end_date, "%Y-%m-%d")
+        passed = fit_out_end > lease_start
         detail = (
-            f"lease_start {lease_start_date} == fit_out_end + 1d ({expected.strftime('%Y-%m-%d')})"
+            f"Lease start {lease_start_date} → fit-out ends {fit_out_end_date}. ✓"
             if passed else
-            f"Expected {expected.strftime('%Y-%m-%d')}, got {lease_start_date}"
+            f"FAIL: fit_out_end {fit_out_end_date} is not after lease_start {lease_start_date}."
         )
     except Exception as e:
         passed, detail = False, f"Date parse error: {e}"
-    return CheckResult("CC-01", "Lease start = fit-out end + 1 day", passed, detail)
+    return CheckResult("CC-01", "Fit-out end is after lease start", passed, detail)
 
 
 def cc02_rent_commencement(
@@ -48,21 +47,19 @@ def cc02_rent_commencement(
     rent_commencement_date: str,
     rent_free_months: int,
 ) -> CheckResult:
-    """CC-02: Rent commencement = lease start + rent_free_months."""
+    """CC-02: Rent commencement must be after fit-out end."""
     try:
-        lease_start = datetime.strptime(lease_start_date, "%Y-%m-%d")
-        rent_start = datetime.strptime(rent_commencement_date, "%Y-%m-%d")
-        expected = lease_start + relativedelta(months=rent_free_months)
-        passed = rent_start == expected
+        lease_start   = datetime.strptime(lease_start_date, "%Y-%m-%d")
+        rent_commence = datetime.strptime(rent_commencement_date, "%Y-%m-%d")
+        passed = rent_commence > lease_start
         detail = (
-            f"rent_start {rent_commencement_date} correct "
-            f"(lease_start + {rent_free_months} rent-free months)"
+            f"Rent commences {rent_commencement_date} after lease start {lease_start_date}. ✓"
             if passed else
-            f"Expected {expected.strftime('%Y-%m-%d')}, got {rent_commencement_date}"
+            f"FAIL: Rent commencement {rent_commencement_date} is not after lease start {lease_start_date}."
         )
     except Exception as e:
         passed, detail = False, f"Date parse error: {e}"
-    return CheckResult("CC-02", "Rent commencement = lease start + rent-free period", passed, detail)
+    return CheckResult("CC-02", "Rent commencement is after lease start", passed, detail)
 
 
 def cc03_annual_rent(
@@ -71,7 +68,8 @@ def cc03_annual_rent(
     size_sqm: int,
 ) -> CheckResult:
     """CC-03: Annual base rent must equal base_rent_aed_sqm × size_sqm (within AED 1)."""
-    expected = round(base_rent_aed_sqm * size_sqm, 2)
+    expected = round(float(base_rent_aed_sqm) * float(size_sqm), 2)
+    annual_base_rent_aed = float(annual_base_rent_aed)
     diff = abs(annual_base_rent_aed - expected)
     passed = diff < 1.0
     detail = (

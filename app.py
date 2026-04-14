@@ -266,7 +266,7 @@ def render_gate_2(state):
         icon = {"valid": "✅", "warning": "⚠️"}.get(status, "❌")
         st.markdown(f"{icon} **{doc.get('doc_type', '').replace('_', ' ').title()}** "
                     f"— {status.upper()} · Expiry: {doc.get('expiry_date', 'N/A') or 'N/A'}")
-        if "flag" in doc:
+        if doc.get("flag"):
             st.caption(f"🚩 {doc['flag']}")
 
     for m in docs.get("missing_documents", []):
