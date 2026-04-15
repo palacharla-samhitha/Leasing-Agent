@@ -8,7 +8,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routers import inquiries
+from api.routers import inquiries,units,workflows
 
 app = FastAPI(
     title="MAF Leasing Agent API",
@@ -27,8 +27,10 @@ app.add_middleware(
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(inquiries.router, prefix="/inquiries", tags=["Inquiries"])
+app.include_router(units.router,     prefix="/units",     tags=["Units"])
+app.include_router(workflows.router,  prefix="/workflows",  tags=["Workflows"])
 
-# ── Health check ─────────────────────────────────────────────────────────────
+# Health check
 @app.get("/health", tags=["Health"])
 def health():
     return {"status": "ok", "service": "MAF Leasing Agent API"}
