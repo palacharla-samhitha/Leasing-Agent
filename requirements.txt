@@ -8,3 +8,5 @@ reportlab
 pathlib2>=2.3.7
 groq
 psycopg2-binary==2.9.10
+fastapi
+uvicorn

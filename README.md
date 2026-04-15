@@ -89,3 +89,6 @@ cd ai-leasing-agent
 ## Commands to run data
 
 python tools\test_tools.py
+
+## FASTAPI
+uvicorn api.main:app --reload --port 8000

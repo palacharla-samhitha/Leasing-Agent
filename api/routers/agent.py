@@ -1,0 +1,1 @@
+# Required when implementing  React needs an endpoint to trigger the LangGraph run
