@@ -8,7 +8,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routers import inquiries,units,workflows,properties,dashboard
+from api.routers import inquiries,units,workflows,properties,dashboard,audit
 
 app = FastAPI(
     title="MAF Leasing Agent API",
@@ -30,7 +30,7 @@ app.include_router(inquiries.router, prefix="/inquiries", tags=["Inquiries"])
 app.include_router(units.router,     prefix="/units",     tags=["Units"])
 app.include_router(workflows.router,  prefix="/workflows",  tags=["Workflows"])
 app.include_router(properties.router, prefix="/properties", tags=["Properties"])
-# app.include_router(audit.router, prefix="/audit", tags=["Audit"])
+app.include_router(audit.router, prefix="/audit", tags=["Audit"])
 app.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])
 
 # Health check

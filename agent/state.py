@@ -1,15 +1,21 @@
 # agent/state.py
 # LeasingAgentState — single source of truth for the entire workflow
 # Every node reads from this and writes back to it
+# Phase 2: thread_id added for audit trail linkage
 
 from typing import TypedDict, Optional, List, Literal
 
 
 class LeasingAgentState(TypedDict):
 
+    # ── Workflow Identity ─────────────────────────────────────────────────────
+    thread_id: Optional[str]            # LangGraph thread identifier
+                                        # Set by the workflow router on POST /workflows/start
+                                        # Used by audit_events to link all events for a workflow
+
     # ── Inquiry ───────────────────────────────────────────────────────────────
     inquiry_id: str
-    inquiry: dict                       # Full inquiry object from inquiries.json
+    inquiry: dict                       # Full inquiry object from inquiries table
 
     # ── Intake & Classification ───────────────────────────────────────────────
     classification: Optional[dict]      # Agent output from node_intake
@@ -24,7 +30,6 @@ class LeasingAgentState(TypedDict):
 
     # ── Unit Matching ─────────────────────────────────────────────────────────
     matched_units: List[dict]           # Units returned and ranked by node_unit_match
-                                        # Each unit now includes _scoring data
     selected_unit: Optional[dict]       # Unit confirmed by human at Gate 1
     weak_match_warning: Optional[str]   # Populated if top unit match_score < 0.50
 
@@ -35,39 +40,44 @@ class LeasingAgentState(TypedDict):
     # ── Documents ─────────────────────────────────────────────────────────────
     document_checklist: List[str]       # List of required documents for this tenant
     tenant_message: Optional[str]       # Covering message sent to tenant
-    documents_received: Optional[dict]  # Verification scenario loaded from documents.json
+    documents_received: Optional[dict]  # Verification scenario from documents table
     document_issues: List[str]          # Flags raised by node_doc_verify
     documents_approved: bool            # LCM approval decision at Gate 2
 
     # ── Lease ─────────────────────────────────────────────────────────────────
     lease_draft: Optional[dict]         # Generated lease JSON from node_lease_gen
     consistency_check: Optional[dict]   # Result of consistency check
-                                        # keys: status, checks_run, issues_found, detail
     lease_approved: bool                # Senior manager approval at Gate 3
 
     # ── EJARI ─────────────────────────────────────────────────────────────────
     ejari_filed: bool
-    ejari_certificate: Optional[dict]   # Simulated EJARI registration certificate
+    ejari_certificate: Optional[dict]
     deal_closed: bool
 
     # ── Agent Reasoning Log ───────────────────────────────────────────────────
     reasoning_log: List[dict]           # Each step appends:
-                                        # { step, reasoning, output, timestamp }
+                                        # { step, reasoning, output, timestamp, fallback_used }
 
     # ── Flow Control ──────────────────────────────────────────────────────────
-    current_step: str                   # Current node name
+    current_step: str
     gate_decision: Optional[Literal["approve", "edit", "reject"]]
-    gate_edits: Optional[dict]          # Human edits made at any gate
-    rejection_reason: Optional[str]     # Populated when gate_decision == "reject"
-    errors: List[str]                   # Any errors encountered during execution
+    gate_edits: Optional[dict]
+    rejection_reason: Optional[str]
+    errors: List[str]
 
 
-def get_initial_state(inquiry: dict) -> LeasingAgentState:
+def get_initial_state(inquiry: dict, thread_id: str = None) -> LeasingAgentState:
     """
     Returns a clean initial state for a given inquiry.
     Call this when starting a new leasing workflow.
+
+    thread_id is passed in from the workflow router (POST /workflows/start)
+    so audit events can be linked to the correct LangGraph thread.
     """
     return LeasingAgentState(
+        # Workflow identity
+        thread_id=thread_id,
+
         # Inquiry
         inquiry_id=inquiry["inquiry_id"],
         inquiry=inquiry,

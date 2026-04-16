@@ -110,7 +110,7 @@ def file_ejari(
             """,
             (
                 ejari_ref,
-                kofax_doc_ref,      # using kofax_doc_ref as lease reference
+                None,               # lease_id nullable for POC
                 property_id,
                 unit_id,
                 legal_entity_name,
