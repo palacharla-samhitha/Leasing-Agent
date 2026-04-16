@@ -46,10 +46,13 @@ def list_units(
     category:    Optional[str] = Query(None, description="Filter by category fit e.g. sports"),
     size_min:    Optional[int] = Query(None, description="Minimum size in sqm"),
     size_max:    Optional[int] = Query(None, description="Maximum size in sqm"),
+    limit:       int           = Query(20,   description="Number of results per page (default 20)"),
+    offset:      int           = Query(0,    description="Number of results to skip (for next/prev)"),
 ):
     """
     List units with optional filters.
     Always joins vacancy_plan so demand score and footfall tier are included.
+    Paginated — use limit + offset for next/previous navigation.
     """
     filters = []
     params  = []
@@ -114,13 +117,23 @@ def list_units(
             COALESCE(vp.demand_score, 0) DESC,
             u.sqm ASC
     """
+    query += " LIMIT %s OFFSET %s"
 
     with get_conn() as conn:
         cur = dict_cursor(conn)
-        cur.execute(query, params)
+        cur.execute(query, params + [limit, offset])
         rows = cur.fetchall()
 
-    return {"count": len(rows), "units": rows}
+    return {
+        "units": rows,
+        "pagination": {
+            "limit":    limit,
+            "offset":   offset,
+            "returned": len(rows),
+            "has_next": len(rows) == limit,
+            "has_prev": offset > 0,
+        }
+    }
 
 
 # ── GET /units/{unit_id} ──────────────────────────────────────────────────────

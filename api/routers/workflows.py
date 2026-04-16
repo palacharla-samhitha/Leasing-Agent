@@ -39,9 +39,12 @@ class WorkflowStartRequest(BaseModel):
 
 
 class GateResumeRequest(BaseModel):
-    decision:   str             # "approve" | "reject"
-    gate:       str             # "gate_1" | "gate_2" | "gate_3"
-    agent_note: Optional[str] = None   # optional note from leasing exec
+    decision:str # "approve" | "reject"
+    gate:str   # "gate_1" | "gate_2" | "gate_3"
+    agent_note: Optional[str] = None  # optional note from leasing exec
+    hot_edits: Optional[dict] = None # Gate 1 — human-edited HoT fields
+                                            # e.g. rent, fit_out_months, duration
+    selected_unit_id: Optional[str] = None  # Gate 1 — unit selected by leasing exec
 
 
 # ── Helper — get inquiry from DB ──────────────────────────────────────────────
@@ -155,6 +158,47 @@ def start_workflow(body: WorkflowStartRequest):
     }
 
 
+# ── GET /workflows/active ─────────────────────────────────────────────────────
+# IMPORTANT: This route MUST be defined before /{thread_id} routes.
+# FastAPI matches routes top-down — if /{thread_id}/state comes first,
+# "active" gets treated as a thread_id and this endpoint never runs.
+
+@router.get("/active")
+def get_active_workflows():
+    """
+    List all currently running or paused workflows.
+    Reads from in-memory registry + queries each thread's state.
+    """
+    active = []
+
+    for thread_id, inquiry_id in _workflow_registry.items():
+        try:
+            config   = {"configurable": {"thread_id": thread_id}}
+            snapshot = leasing_graph.get_state(config)
+            next_nodes = list(snapshot.next) if snapshot.next else []
+
+            # Skip completed workflows
+            if not next_nodes:
+                continue
+
+            paused_at = next(
+                (n for n in next_nodes if n in ("gate_1", "gate_2", "gate_3")),
+                None
+            )
+
+            active.append({
+                "thread_id":  thread_id,
+                "inquiry_id": inquiry_id,
+                "status":     "paused" if paused_at else "running",
+                "paused_at":  paused_at,
+                "next_nodes": next_nodes,
+            })
+        except Exception:
+            continue
+
+    return {"count": len(active), "workflows": active}
+
+
 # ── GET /workflows/{thread_id}/state ─────────────────────────────────────────
 
 @router.get("/{thread_id}/state")
@@ -208,6 +252,22 @@ def resume_workflow(thread_id: str, body: GateResumeRequest):
     update = {"gate_decision": gate_decision}
     if body.agent_note:
         update["agent_note"] = body.agent_note
+
+    # Gate 1 — pass back HoT edits and selected unit if provided
+    if body.gate == "gate_1":
+        if body.hot_edits:
+            update["hot_approved"] = body.hot_edits
+        if body.selected_unit_id:
+            # Fetch full unit from DB and pass into state
+            from tools.yardi import get_unit_by_id
+            unit = get_unit_by_id(body.selected_unit_id)
+            if unit:
+                update["selected_unit"] = unit
+            else:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Unit {body.selected_unit_id} not found"
+                )
 
     leasing_graph.update_state(config, update)
 
@@ -283,41 +343,3 @@ def get_workflow_history(thread_id: str):
         "total_steps": len(audit_trail),
         "history":     audit_trail,
     }
-
-
-# ── GET /workflows/active ─────────────────────────────────────────────────────
-
-@router.get("/active")
-def get_active_workflows():
-    """
-    List all currently running or paused workflows.
-    Reads from in-memory registry + queries each thread's state.
-    """
-    active = []
-
-    for thread_id, inquiry_id in _workflow_registry.items():
-        try:
-            config   = {"configurable": {"thread_id": thread_id}}
-            snapshot = leasing_graph.get_state(config)
-            next_nodes = list(snapshot.next) if snapshot.next else []
-
-            # Skip completed workflows
-            if not next_nodes:
-                continue
-
-            paused_at = next(
-                (n for n in next_nodes if n in ("gate_1", "gate_2", "gate_3")),
-                None
-            )
-
-            active.append({
-                "thread_id":  thread_id,
-                "inquiry_id": inquiry_id,
-                "status":     "paused" if paused_at else "running",
-                "paused_at":  paused_at,
-                "next_nodes": next_nodes,
-            })
-        except Exception:
-            continue
-
-    return {"count": len(active), "workflows": active}

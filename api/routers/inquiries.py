@@ -91,10 +91,13 @@ def list_inquiries(
     priority:   Optional[str] = Query(None, description="Filter by priority: high | medium | low"),
     date_from:  Optional[str] = Query(None, description="Filter received_at >= date (YYYY-MM-DD)"),
     date_to:    Optional[str] = Query(None, description="Filter received_at <= date (YYYY-MM-DD)"),
+    limit:      int           = Query(20,   description="Number of results per page (default 20)"),
+    offset:     int           = Query(0,    description="Number of results to skip (for next/prev)"),
 ):
     """
     List all inquiries with optional filters.
     Returns inquiry list with current workflow status.
+    Paginated — use limit + offset for next/previous navigation.
     """
     filters = []
     params  = []
@@ -136,14 +139,24 @@ def list_inquiries(
                 WHEN 'low'    THEN 3
             END,
             i.received_at DESC
+        LIMIT %s OFFSET %s
     """
 
     with get_conn() as conn:
         cur = dict_cursor(conn)
-        cur.execute(query, params)
+        cur.execute(query, params + [limit, offset])
         rows = cur.fetchall()
 
-    return {"count": len(rows), "inquiries": rows}
+    return {
+        "inquiries": rows,
+        "pagination": {
+            "limit":    limit,
+            "offset":   offset,
+            "returned": len(rows),
+            "has_next": len(rows) == limit,   # if full page returned, likely more exist
+            "has_prev": offset > 0,
+        }
+    }
 
 
 # ── GET /inquiries/{inquiry_id} ───────────────────────────────────────────────
