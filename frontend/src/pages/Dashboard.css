@@ -1,0 +1,17 @@
+.filter-bar { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+.filter-group { display: flex; flex-direction: column; gap: 4px; }
+.filter-label { font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; }
+.filter-select { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text-primary); padding: 7px 12px; font-size: 0.875rem; font-family: var(--font-body); cursor: pointer; min-width: 160px; }
+.filter-select:focus { outline: none; border-color: var(--accent-teal); }
+.data-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+.data-table th { text-align: left; padding: 10px 14px; color: var(--text-muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; border-bottom: 1px solid var(--border); font-weight: 600; }
+.data-table td { padding: 12px 14px; border-bottom: 1px solid rgba(30,48,72,0.5); color: var(--text-primary); vertical-align: middle; }
+.table-row { cursor: pointer; transition: background var(--transition); }
+.table-row:hover td { background: rgba(0,200,150,0.03); }
+.table-loading { display: flex; justify-content: center; padding: 48px; }
+.mono { font-family: monospace; font-size: 0.8rem; color: var(--text-secondary); }
+.bold { font-weight: 600; }
+.grade { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 6px; font-weight: 700; font-size: 0.8rem; }
+.grade-a { background: rgba(0,200,150,0.15); color: var(--accent-teal); }
+.grade-b { background: rgba(240,165,0,0.15); color: var(--accent-gold); }
+.grade-c { background: rgba(232,85,85,0.15); color: var(--accent-red); }

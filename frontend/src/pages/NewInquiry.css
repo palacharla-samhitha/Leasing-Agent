@@ -1,0 +1,139 @@
+/* src/pages/NewInquiry.css */
+
+.new-inquiry { max-width: 860px; }
+
+/* Form sections */
+.inquiry-form {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.form-section {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 24px 26px;
+}
+
+.form-section-title {
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--accent-teal);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 20px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Form rows */
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.form-row:last-child { margin-bottom: 0; }
+
+.form-row--3 {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
+/* Fields */
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-label {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.required { color: var(--accent-teal); }
+
+/* Inputs */
+.form-input,
+.form-select {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 9px 12px;
+  font-size: 0.875rem;
+  font-family: var(--font-body);
+  transition: border-color var(--transition);
+  width: 100%;
+}
+
+.form-input:focus,
+.form-select:focus {
+  outline: none;
+  border-color: var(--accent-teal);
+  background: var(--bg-card);
+}
+
+.form-input::placeholder { color: var(--text-muted); }
+
+.form-input--error {
+  border-color: var(--accent-red) !important;
+}
+
+.form-error {
+  font-size: 0.75rem;
+  color: var(--accent-red);
+  margin-top: 2px;
+}
+
+.form-hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+/* Checkbox */
+.form-field--checkbox {
+  justify-content: center;
+  padding-top: 8px;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.checkbox-input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent-teal);
+  cursor: pointer;
+}
+
+/* Submit */
+.form-submit-error {
+  background: rgba(232,85,85,0.08);
+  border: 1px solid rgba(232,85,85,0.25);
+  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+  color: var(--accent-red);
+  font-size: 0.875rem;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding-top: 8px;
+}

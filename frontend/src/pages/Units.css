@@ -1,0 +1,2 @@
+.demand-score { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--text-secondary); }
+.demand-bar { height: 5px; background: var(--accent-teal); border-radius: 3px; min-width: 4px; max-width: 60px; }

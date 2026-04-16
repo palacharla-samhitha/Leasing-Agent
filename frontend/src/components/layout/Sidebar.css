@@ -1,0 +1,106 @@
+.sidebar {
+  width: 220px;
+  min-height: 100vh;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 28px 0 20px;
+  position: fixed;
+  top: 0; left: 0;
+  z-index: 100;
+}
+
+.sidebar-logo {
+  padding: 0 22px;
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.logo-re     { color: var(--accent-teal); }
+.logo-knew   { color: var(--text-primary); }
+.logo-divider{ color: var(--text-muted); margin: 0 6px; font-weight: 300; }
+.logo-maf    { color: var(--accent-gold); }
+
+.sidebar-subtitle {
+  padding: 4px 22px 0;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sidebar-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 22px 0;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 10px;
+  flex: 1;
+}
+
+.sidebar-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: background var(--transition), color var(--transition);
+  text-decoration: none;
+}
+
+.sidebar-link:hover {
+  background: var(--bg-card);
+  color: var(--text-primary);
+  text-decoration: none;
+}
+
+.sidebar-link--active {
+  background: rgba(0,200,150,0.10);
+  color: var(--accent-teal);
+  border: 1px solid rgba(0,200,150,0.18);
+}
+
+.sidebar-chevron {
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity var(--transition);
+}
+
+.sidebar-link:hover .sidebar-chevron,
+.sidebar-link--active .sidebar-chevron {
+  opacity: 1;
+}
+
+.sidebar-footer {
+  padding: 20px 22px 0;
+  border-top: 1px solid var(--border);
+  margin-top: 20px;
+}
+
+.sidebar-badge {
+  font-size: 0.7rem;
+  color: var(--accent-teal);
+  background: rgba(0,200,150,0.08);
+  border: 1px solid rgba(0,200,150,0.2);
+  border-radius: 4px;
+  padding: 3px 8px;
+  display: inline-block;
+  margin-bottom: 6px;
+}
+
+.sidebar-confidential {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  letter-spacing: 0.1em;
+}
