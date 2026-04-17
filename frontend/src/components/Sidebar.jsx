@@ -11,8 +11,8 @@ const ADMIN_LINKS = [
 ]
 
 const CUSTOMER_LINKS = [
-  { to: '/properties',  label: 'Properties', icon: '⊞' },
-  { to: '/units',       label: 'Units',      icon: '⊟' },
+  { to: '/properties',  label: 'Properties',    icon: '⊞' },
+  { to: '/units',       label: 'Units',         icon: '⊟' },
   { to: '/inquiry/new', label: 'Submit Inquiry', icon: '+' },
 ]
 
@@ -25,6 +25,7 @@ export default function Sidebar() {
       style={{ background: '#0A2342', width: '200px', flexShrink: 0 }}
       className="flex flex-col py-4 overflow-y-auto"
     >
+
       {/* Section label */}
       <div className="px-4 mb-3">
         <span style={{ color: 'rgba(255,255,255,0.3)', fontSize: '10px', letterSpacing: '1px', textTransform: 'uppercase' }}>

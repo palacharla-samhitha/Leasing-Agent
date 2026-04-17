@@ -16,10 +16,7 @@ export default function Login() {
 
         {/* Logo block */}
         <div className="mb-8 text-center">
-          <div style={{ fontSize: '28px', fontWeight: '500', marginBottom: '6px' }}>
-            <span style={{ color: '#00C4B4' }}>re</span>
-            <span style={{ color: '#0A2342' }}>knew</span>
-          </div>
+          <img src="/reknew_branding.png" alt="ReKnew" style={{ height: '40px', marginBottom: '8px' }} />
           <div style={{ color: '#0A2342', fontSize: '13px', opacity: 0.5, letterSpacing: '0.5px' }}>
             × MAF Properties
           </div>

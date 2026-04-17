@@ -16,16 +16,14 @@ export default function TopBar() {
       className="flex items-center justify-between px-5"
     >
       {/* Logo */}
-      <div style={{ fontSize: '14px', fontWeight: '500' }}>
-        <span style={{ color: '#00C4B4' }}>re</span>
-        <span style={{ color: 'white' }}>knew</span>
-        <span style={{ color: 'rgba(255,255,255,0.3)', margin: '0 8px' }}>×</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <img src="/reknew_branding_dark.svg" alt="ReKnew" style={{ height: '28px' }} />
+        <span style={{ color: 'rgba(255,255,255,0.3)' }}>×</span>
         <span style={{ color: 'rgba(255,255,255,0.7)', fontSize: '13px' }}>MAF Properties</span>
       </div>
 
       {/* Right side */}
       <div className="flex items-center gap-3">
-        {/* Role badge */}
         <span style={{
           background: 'rgba(0,196,180,0.12)',
           color: '#00C4B4',
@@ -38,7 +36,6 @@ export default function TopBar() {
           {role === 'admin' ? 'MAF Admin' : 'Guest Explorer'}
         </span>
 
-        {/* Sign out */}
         <button
           onClick={handleSignOut}
           style={{
