@@ -1,66 +1,121 @@
-# ============================================================================
-# db.py — PostgreSQL connection pool (psycopg2)
-# COPY THIS FILE TO: project root (same level as app.py)
-# AI Leasing Agent · MAF Properties · ReKnew · April 2026
-#
-# Single shared pool — all tool files import get_conn() from here.
-# Credentials are read from .env — never hardcoded.
-# ============================================================================
+# ==============================================================================
+# db.py — Databricks SQL connection (backwards compatible with psycopg2 interface)
+# MAF AI Leasing Agent · ReKnew · April 2026
+# ==============================================================================
 
+from databricks import sql
 import os
-from contextlib import contextmanager
 from dotenv import load_dotenv
-import psycopg2
-from psycopg2 import pool as pg_pool
-from psycopg2.extras import RealDictCursor
 
 load_dotenv()
 
-# ── Connection pool (1–10 connections, thread-safe) ──────────────────────────
-_pool = pg_pool.ThreadedConnectionPool(
-    minconn=1,
-    maxconn=10,
-    host=os.getenv("DB_HOST", "localhost"),
-    port=int(os.getenv("DB_PORT", 5432)),
-    dbname=os.getenv("DB_NAME", "leasing_agent"),
-    user=os.getenv("DB_USER", "postgres"),
-    password=os.getenv("DB_PASSWORD", ""),
-)
+DATABRICKS_HOST  = os.getenv("DATABRICKS_HOST", "")
+DATABRICKS_TOKEN = os.getenv("DATABRICKS_TOKEN", "")
+DATABRICKS_HTTP  = os.getenv("DATABRICKS_HTTP_PATH", "")
+CATALOG          = os.getenv("DATABRICKS_CATALOG", "workspace")
+SCHEMA           = os.getenv("DATABRICKS_SCHEMA", "maf_gold")
 
 
-@contextmanager
+def table(name: str) -> str:
+    """Returns fully qualified table name."""
+    return f"{CATALOG}.{SCHEMA}.{name}"
+
+
+# ==============================================================================
+# Backwards-compatible interface — keeps all routers working unchanged
+# ==============================================================================
+
+class DictCursor:
+    """
+    Mimics psycopg2 RealDictCursor interface.
+    Converts %s params to ? for Databricks SQL.
+    """
+    def __init__(self, connection):
+        self._conn   = connection
+        self._cursor = connection.cursor()
+        self.lastrowid = None
+
+    def execute(self, query: str, params=None):
+        # Convert PostgreSQL %s placeholders to Databricks ?
+        databricks_query = query.replace("%s", "?")
+        # Convert table names to fully qualified
+        databricks_query = _qualify_tables(databricks_query)
+        self._cursor.execute(databricks_query, list(params) if params else [])
+
+    def fetchone(self):
+        row = self._cursor.fetchone()
+        if row is None:
+            return None
+        cols = [d[0] for d in self._cursor.description]
+        return dict(zip(cols, row))
+
+    def fetchall(self):
+        rows = self._cursor.fetchall()
+        if not rows:
+            return []
+        cols = [d[0] for d in self._cursor.description]
+        return [dict(zip(cols, row)) for row in rows]
+
+    def close(self):
+        self._cursor.close()
+
+
+class DatabricksConnection:
+    """Mimics psycopg2 connection interface."""
+
+    def __init__(self):
+        self._conn = sql.connect(
+            server_hostname = DATABRICKS_HOST,
+            http_path       = DATABRICKS_HTTP,
+            access_token    = DATABRICKS_TOKEN,
+        )
+
+    def cursor(self):
+        return self._conn.cursor()
+
+    def commit(self):
+        pass  # Delta Lake auto-commits
+
+    def close(self):
+        self._conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
 def get_conn():
-    """
-    Context manager that checks out a connection from the pool,
-    commits on success, rolls back on error, and always returns it.
-
-    Usage:
-        with get_conn() as conn:
-            cur = conn.cursor(cursor_factory=RealDictCursor)
-            cur.execute("SELECT * FROM properties")
-            rows = cur.fetchall()   # list of dicts — no column mapping needed
-    """
-    conn = _pool.getconn()
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        _pool.putconn(conn)
+    """Drop-in replacement for psycopg2 get_conn()."""
+    return DatabricksConnection()
 
 
-# ── Convenience cursor ────────────────────────────────────────────────────────
 def dict_cursor(conn):
-    """
-    Returns a RealDictCursor — rows come back as plain dicts automatically.
-    Eliminates the need for manual col_names() / zip() conversions.
+    """Drop-in replacement for psycopg2 dict_cursor()."""
+    return DictCursor(conn._conn)
 
-    Usage:
-        with get_conn() as conn:
-            cur = dict_cursor(conn)
-            cur.execute("SELECT * FROM units WHERE unit_id = %s", (unit_id,))
-            row = cur.fetchone()   # already a dict or None
+
+# ==============================================================================
+# Table name qualification
+# ==============================================================================
+
+# All table names used across routers
+TABLES = [
+    "inquiries", "properties", "units", "leases", "rent_charges",
+    "documents", "lead_scores", "vacancy_plan", "pricing_rules",
+    "ejari_registrations", "audit_events"
+]
+
+def _qualify_tables(query: str) -> str:
     """
-    return conn.cursor(cursor_factory=RealDictCursor)
+    Replaces bare table names with fully qualified catalog.schema.table names.
+    e.g. 'FROM inquiries' → 'FROM workspace.maf_gold.inquiries'
+    """
+    import re
+    for t in TABLES:
+        # Match table name as whole word, not already qualified
+        pattern = rf'(?<![.\w])\b{t}\b(?!\s*\.)'
+        replacement = f"{CATALOG}.{SCHEMA}.{t}"
+        query = re.sub(pattern, replacement, query, flags=re.IGNORECASE)
+    return query
