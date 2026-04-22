@@ -1,9 +1,21 @@
-command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+command:
+  - uvicorn
+  - api.main:app
+  - --host
+  - 0.0.0.0
+  - --port
+  - "8000"
 
 env:
   - name: DATABRICKS_HOST
-    value: "https://dbc-28a776d9-2062.cloud.databricks.com"
-
-resources:
-  - name: maf-leasing-warehouse
-    description: "SQL warehouse for MAF leasing agent"
+    value: "dbc-28a776d9-2062.cloud.databricks.com"
+  - name: DATABRICKS_HTTP_PATH
+    value: "REPLACE_WITH_HTTP_PATH"
+  - name: DATABRICKS_TOKEN
+    value: "REPLACE_WITH_TOKEN"
+  - name: DATABRICKS_CATALOG
+    value: "workspace"
+  - name: DATABRICKS_SCHEMA
+    value: "maf_gold"
+  - name: GROQ_API_KEY
+    value: "REPLACE_WITH_GROQ_KEY"
